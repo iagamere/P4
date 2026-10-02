@@ -14,9 +14,10 @@ data class Ps4(
 )
 
 /** Separate concepts, never merged: request state / http / ftp / reachability / download state. */
-enum class Link(val label: String) {
-    UNKNOWN("Not checked"), AVAILABLE("Available"), UNAVAILABLE("Unavailable"),
-    RECONNECTING("Reconnecting…"), STANDBY("Standby (fallback)"), DISABLED("Off")
+enum class Link(private val en: String, private val ar: String) {
+    UNKNOWN("Not checked", "لم يُفحص"), AVAILABLE("Available", "متاح"), UNAVAILABLE("Unavailable", "غير متاح"),
+    RECONNECTING("Reconnecting…", "إعادة الاتصال…"), STANDBY("Standby (fallback)", "احتياطي"), DISABLED("Off", "متوقف");
+    val label get() = tr(en, ar)
 }
 enum class Reach { UNKNOWN, REACHABLE, UNREACHABLE }
 data class Ps4Status(
@@ -24,19 +25,20 @@ data class Ps4Status(
     val lastOkAt: Long = 0, val message: String = ""
 )
 
-enum class DlState(val label: String, val active: Boolean) {
-    SUBMITTING("Sending to PS4", true),
-    QUEUED("Queued", true),
-    WAITING_FOR_START("Waiting for PS4 download to start", true),
-    STARTING("Starting", true),
-    DOWNLOADING("Downloading", true),
-    STALLED("Stalled", true),
-    CONNECTION_LOST("PS4 monitoring connection lost", true),
-    VERIFYING("Verifying", true),
-    COMPLETED("Completed", false),
-    FAILED("Failed", false),
-    STOPPED("Monitoring stopped", false),
-    NOT_STARTED("Download not started", false)
+enum class DlState(private val en: String, private val ar: String, val active: Boolean) {
+    SUBMITTING("Sending to PS4", "جارٍ الإرسال إلى الـPS4", true),
+    QUEUED("Queued", "في قائمة الانتظار", true),
+    WAITING_FOR_START("Waiting for PS4 to start", "بانتظار بدء الـPS4", true),
+    STARTING("Starting", "جارٍ البدء", true),
+    DOWNLOADING("Downloading", "جارٍ التحميل", true),
+    STALLED("Stalled", "متعثّر", true),
+    CONNECTION_LOST("Connection lost", "انقطع الاتصال", true),
+    VERIFYING("Verifying", "جارٍ التحقق", true),
+    COMPLETED("Completed", "اكتمل", false),
+    FAILED("Failed", "فشل", false),
+    STOPPED("Monitoring stopped", "أُوقفت المراقبة", false),
+    NOT_STARTED("Download not started", "لم يبدأ التحميل", false);
+    val label get() = tr(en, ar)
 }
 
 data class Download(

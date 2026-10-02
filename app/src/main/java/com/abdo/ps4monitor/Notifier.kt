@@ -12,9 +12,9 @@ import kotlin.math.abs
 
 /**
  * Three stable channels (never one per download):
- *   active  = "Active downloads"   (ongoing, silent, one notification per download id, updated in place)
- *   results = "Download results"   (completed / failed / not started; replaces the ongoing one; posted once, guarded by Download.terminalNotified)
- *   alerts  = "Connection / errors"
+ *   active  = tr("Active downloads", "التحميلات النشطة")   (ongoing, silent, one notification per download id, updated in place)
+ *   results = tr("Download results", "نتائج التحميل")   (completed / failed / not started; replaces the ongoing one; posted once, guarded by Download.terminalNotified)
+ *   alerts  = tr("Connection / errors", "الاتصال / الأخطاء")
  */
 object Notifier {
     private lateinit var ctx: Context
@@ -23,9 +23,9 @@ object Notifier {
     fun init(c: Context) {
         ctx = c.applicationContext
         val m = ctx.getSystemService(NotificationManager::class.java)
-        m.createNotificationChannel(NotificationChannel("active", "Active downloads", NotificationManager.IMPORTANCE_LOW))
-        m.createNotificationChannel(NotificationChannel("results", "Download results", NotificationManager.IMPORTANCE_HIGH))
-        m.createNotificationChannel(NotificationChannel("alerts", "Connection / errors", NotificationManager.IMPORTANCE_DEFAULT))
+        m.createNotificationChannel(NotificationChannel("active", tr("Active downloads", "التحميلات النشطة"), NotificationManager.IMPORTANCE_LOW))
+        m.createNotificationChannel(NotificationChannel("results", tr("Download results", "نتائج التحميل"), NotificationManager.IMPORTANCE_HIGH))
+        m.createNotificationChannel(NotificationChannel("alerts", tr("Connection / errors", "الاتصال / الأخطاء"), NotificationManager.IMPORTANCE_DEFAULT))
     }
     private fun pi() = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
 
@@ -43,11 +43,11 @@ object Notifier {
         val sizeLine = if (exp != null) "${Fmt.gb(d.currentSize)} / ${Fmt.gb(exp)}" else Fmt.gb(d.currentSize)
         val detail = when (d.state) {
             DlState.DOWNLOADING -> listOfNotNull(d.pct?.let { "$it%" }, Fmt.mbs(d.speed), if (d.etaSec >= 0) "ETA ${Fmt.dur(d.etaSec)}" else null).joinToString(" • ")
-            DlState.STALLED -> "Download stalled"
-            DlState.CONNECTION_LOST -> "PS4 monitoring connection interrupted. Reconnecting…"
-            DlState.QUEUED, DlState.WAITING_FOR_START -> "Waiting for PS4 download to start…"
-            DlState.STARTING -> "Starting…"
-            DlState.VERIFYING -> "Checking downloaded file…"
+            DlState.STALLED -> tr("Download stalled", "التحميل متعثّر")
+            DlState.CONNECTION_LOST -> tr("PS4 monitoring connection interrupted. Reconnecting…", "انقطع اتصال المراقبة. جارٍ إعادة الاتصال…")
+            DlState.QUEUED, DlState.WAITING_FOR_START -> tr("Waiting for PS4 download to start…", "بانتظار أن يبدأ الـPS4 التحميل…")
+            DlState.STARTING -> tr("Starting…", "جارٍ البدء…")
+            DlState.VERIFYING -> tr("Checking downloaded file…", "جارٍ فحص الملف…")
             else -> ""
         }
         val showSize = d.currentSize > 0
@@ -73,9 +73,9 @@ object Notifier {
         last.remove(d.notificationId)
         if (!Store.settings().notif) return
         val (title, body) = when (d.state) {
-            DlState.COMPLETED -> "Download completed" to "${Fmt.gb(d.currentSize)} • verified"
-            DlState.FAILED -> "Download failed" to (d.errorMessage ?: "Unknown reason")
-            else -> "Download has not started yet" to "ezRemote accepted the request but no download activity was detected."
+            DlState.COMPLETED -> tr("Download completed", "اكتمل التحميل") to "${Fmt.gb(d.currentSize)} • " + tr("verified", "تم التحقق")
+            DlState.FAILED -> tr("Download failed", "فشل التحميل") to Tx.t(d.errorMessage ?: tr("Unknown reason", "سبب غير معروف"))
+            else -> tr("Download has not started yet", "لم يبدأ التحميل بعد") to tr("ezRemote accepted the request but no download activity was detected.", "قبل ezRemote الطلب لكن لم يُكتشف أي نشاط تحميل.")
         }
         val n = NotificationCompat.Builder(ctx, "results").setSmallIcon(if (d.state == DlState.COMPLETED) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
             .setContentTitle(d.displayName).setContentText("$title\n$body".lines().first()).setSubText(psName(d).ifEmpty { null })
@@ -88,7 +88,7 @@ object Notifier {
         if (!lost) { cancel(id); return }
         if (!Store.settings().notif) return
         post(id, NotificationCompat.Builder(ctx, "alerts").setSmallIcon(android.R.drawable.stat_notify_error)
-            .setContentTitle("${p.name}: monitoring connection lost").setContentText("Reconnecting… Downloads on the PS4 may still be running.")
+            .setContentTitle("${p.name}: " + tr("monitoring connection lost", "انقطع اتصال المراقبة")).setContentText(tr("Reconnecting… Downloads on the PS4 may still be running.", "جارٍ إعادة الاتصال… قد تستمر التحميلات على الـPS4."))
             .setOnlyAlertOnce(true).setContentIntent(pi()).build())
     }
 

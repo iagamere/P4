@@ -15,9 +15,9 @@ object Fmt {
         if (sec < 0) return "Unknown"
         val h = sec / 3600; val m = (sec % 3600) / 60; val s = sec % 60
         return when {
-            h > 0 -> "$h h $m min"
-            m > 0 -> if (m < 10 && s > 0) "$m min $s sec" else "$m min"
-            else -> "$s sec"
+            h > 0 -> "$h ${tr("h","س")} $m ${tr("min","د")}"
+            m > 0 -> if (m < 10 && s > 0) "$m ${tr("min","د")} $s ${tr("s","ث")}" else "$m ${tr("min","د")}"
+            else -> "$s ${tr("s","ث")}"
         }
     }
     fun parseSize(t: String): Long {

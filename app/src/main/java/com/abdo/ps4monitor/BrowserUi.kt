@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 package com.abdo.ps4monitor
 import android.annotation.SuppressLint
 import android.content.Context
@@ -11,26 +11,25 @@ import android.webkit.*
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONArray
@@ -125,12 +124,16 @@ fun iconToB64(b: Bitmap?): String {
 }
 fun b64ToBitmap(s: String): Bitmap? = if (s.isEmpty()) null else runCatching { Base64.decode(s, Base64.DEFAULT).let { BitmapFactory.decodeByteArray(it, 0, it.size) } }.getOrNull()
 
-/** Clean square favicon container with a fallback glyph. */
+/** Clean square favicon container with a vector fallback. */
 @Composable fun Favicon(bmp: Bitmap?, size: Int = 40) {
-    Box(Modifier.size(size.dp).clip(RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-        if (bmp != null) Image(bmp.asImageBitmap(), null, Modifier.fillMaxSize().padding(6.dp), contentScale = ContentScale.Fit) else Text("🌐")
+    Box(Modifier.size(size.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh), contentAlignment = Alignment.Center) {
+        if (bmp != null) Image(bmp.asImageBitmap(), null, Modifier.fillMaxSize().padding(6.dp), contentScale = ContentScale.Fit)
+        else Ico(R.drawable.ic_globe, (size * 0.55f).dp, MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+@Composable private fun BarBtn(icon: Int, enabled: Boolean = true, onClick: () -> Unit) =
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(40.dp)) { Ico(icon, 22.dp) }
 
 @Composable fun BrowserScreen() {
     val ctx = LocalContext.current
@@ -141,7 +144,6 @@ fun b64ToBitmap(s: String): Bitmap? = if (s.isEmpty()) null else runCatching { B
     var showTabs by remember { mutableStateOf(false) }
     var showBm by remember { mutableStateOf(false) }
     LaunchedEffect(tab?.id, tab?.url) { if (!focused) addr = tab?.url.orEmpty() }
-    // Back: page history first, then close a popup tab back to its opener; otherwise normal navigation takes over.
     BackHandler(enabled = tab != null && (tab.canBack || Browser.get(tab.openerId) != null)) {
         if (tab!!.canBack) tab.web.goBack() else Browser.close(tab.id)
     }
@@ -151,29 +153,35 @@ fun b64ToBitmap(s: String): Bitmap? = if (s.isEmpty()) null else runCatching { B
         Browser.current()?.web?.loadUrl(u)
     }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(enabled = tab?.canBack == true, onClick = { tab?.web?.goBack() }, contentPadding = PaddingValues(6.dp), modifier = Modifier.width(36.dp)) { Text("‹") }
-            TextButton(enabled = tab?.canFwd == true, onClick = { tab?.web?.goForward() }, contentPadding = PaddingValues(6.dp), modifier = Modifier.width(36.dp)) { Text("›") }
-            TextButton(onClick = { if ((tab?.progress ?: 100) < 100) tab?.web?.stopLoading() else tab?.web?.reload() }, contentPadding = PaddingValues(6.dp), modifier = Modifier.width(36.dp)) {
-                Text(if ((tab?.progress ?: 100) < 100) "✕" else "⟳") }
-            OutlinedTextField(addr, { addr = it }, singleLine = true, modifier = Modifier.weight(1f).onFocusChanged { focused = it.isFocused },
-                placeholder = { Text("Search or enter address") },
+        Row(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            BarBtn(R.drawable.ic_arrow_back, tab?.canBack == true) { tab?.web?.goBack() }
+            BarBtn(R.drawable.ic_arrow_forward, tab?.canFwd == true) { tab?.web?.goForward() }
+            BarBtn(if ((tab?.progress ?: 100) < 100) R.drawable.ic_close else R.drawable.ic_refresh) { if ((tab?.progress ?: 100) < 100) tab?.web?.stopLoading() else tab?.web?.reload() }
+            TextField(addr, { addr = it }, singleLine = true, shape = RoundedCornerShape(24.dp),
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp).onFocusChanged { focused = it.isFocused },
+                placeholder = { Lbl(tr("Search or enter address", "ابحث أو أدخل عنوانًا")) },
+                colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, disabledIndicatorColor = Color.Transparent,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh, unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go), keyboardActions = KeyboardActions(onGo = { go() }))
-            TextButton(onClick = { showTabs = true }, contentPadding = PaddingValues(6.dp)) { Text("▢ ${Browser.tabs.size}") }
+            IconButton(onClick = { showTabs = true }, modifier = Modifier.size(40.dp)) {
+                Box(Modifier.size(24.dp).border(2.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(7.dp)), contentAlignment = Alignment.Center) {
+                    Text("${Browser.tabs.size}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
+            }
             Box {
-                TextButton(onClick = { menu = true }, contentPadding = PaddingValues(6.dp), modifier = Modifier.width(36.dp)) { Text("⋮") }
+                BarBtn(R.drawable.ic_more) { menu = true }
                 DropdownMenu(menu, { menu = false }) {
-                    DropdownMenuItem(text = { Text("New tab") }, onClick = { menu = false; Browser.newTab(Browser.HOME) })
-                    DropdownMenuItem(text = { Text("Add bookmark") }, onClick = {
+                    DropdownMenuItem(leadingIcon = { Ico(R.drawable.ic_add, 20.dp) }, text = { Text(tr("New tab", "تبويب جديد")) }, onClick = { menu = false; Browser.newTab(Browser.HOME) })
+                    DropdownMenuItem(leadingIcon = { Ico(R.drawable.ic_bookmark, 20.dp) }, text = { Text(tr("Add bookmark", "إضافة إشارة مرجعية")) }, onClick = {
                         menu = false
-                        tab?.takeIf { it.url.startsWith("http") }?.let { Store.addBookmark(Bookmark(it.title, it.url, iconToB64(it.icon))); Toast.makeText(ctx, "Bookmark saved", Toast.LENGTH_SHORT).show() }
+                        tab?.takeIf { it.url.startsWith("http") }?.let { Store.addBookmark(Bookmark(it.title, it.url, iconToB64(it.icon))); Toast.makeText(ctx, tr("Bookmark saved", "تم حفظ الإشارة"), Toast.LENGTH_SHORT).show() }
                     })
-                    DropdownMenuItem(text = { Text("Bookmarks") }, onClick = { menu = false; showBm = true })
-                    DropdownMenuItem(text = { Text("Send this page's link to PS4") }, onClick = { menu = false; tab?.url?.takeIf { it.startsWith("http") }?.let { Inbox.url.value = it } })
+                    DropdownMenuItem(leadingIcon = { Ico(R.drawable.ic_bookmark, 20.dp) }, text = { Text(tr("Bookmarks", "الإشارات المرجعية")) }, onClick = { menu = false; showBm = true })
+                    DropdownMenuItem(leadingIcon = { Ico(R.drawable.ic_download, 20.dp) }, text = { Text(tr("Send this page's link to PS4", "إرسال رابط الصفحة إلى PS4")) },
+                        onClick = { menu = false; tab?.url?.takeIf { it.startsWith("http") }?.let { Inbox.url.value = it } })
                 }
             }
         }
-        if ((tab?.progress ?: 100) < 100) LinearProgressIndicator(progress = { (tab?.progress ?: 0) / 100f }, Modifier.fillMaxWidth())
+        if ((tab?.progress ?: 100) < 100) LinearProgressIndicator(progress = { (tab?.progress ?: 0) / 100f }, Modifier.fillMaxWidth().height(3.dp))
         if (tab != null) AndroidView(modifier = Modifier.weight(1f).fillMaxWidth(), factory = { FrameLayout(it) },
             update = { fl ->
                 val wv = tab.web
@@ -184,35 +192,35 @@ fun b64ToBitmap(s: String): Bitmap? = if (s.isEmpty()) null else runCatching { B
             }, onRelease = { it.removeAllViews() })
     }
 
-    if (showTabs) AlertDialog(onDismissRequest = { showTabs = false }, title = { Text("Tabs (${Browser.tabs.size})") },
+    if (showTabs) AlertDialog(onDismissRequest = { showTabs = false }, title = { Text(tr("Tabs", "التبويبات") + " (${Browser.tabs.size})") },
         text = { Column(Modifier.verticalScroll(rememberScrollState())) {
             Browser.tabs.toList().forEach { t ->
-                Row(Modifier.fillMaxWidth().clickable { Browser.activeId = t.id; showTabs = false }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Favicon(t.icon, 32)
-                    Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
-                        Text(t.title, maxLines = 1, fontWeight = if (t.id == Browser.activeId) FontWeight.Bold else FontWeight.Normal)
-                        Text(t.url, maxLines = 1, style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { Browser.activeId = t.id; showTabs = false }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Favicon(t.icon, 36)
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                        Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (t.id == Browser.activeId) FontWeight.Bold else FontWeight.Normal)
+                        Dim(t.url, maxLines = 1)
                     }
-                    TextButton(onClick = { Browser.close(t.id) }) { Text("✕") }
+                    IconButton(onClick = { Browser.close(t.id) }) { Ico(R.drawable.ic_close, 20.dp) }
                 }
             }
         } },
-        confirmButton = { TextButton(onClick = { Browser.newTab(Browser.HOME); showTabs = false }) { Text("New tab") } },
-        dismissButton = { TextButton(onClick = { showTabs = false }) { Text("Close") } })
+        confirmButton = { TextButton(onClick = { Browser.newTab(Browser.HOME); showTabs = false }) { Lbl(tr("New tab", "تبويب جديد")) } },
+        dismissButton = { TextButton(onClick = { showTabs = false }) { Lbl(tr("Close", "إغلاق")) } })
 
     if (showBm) {
         var bms by remember { mutableStateOf(Store.bookmarks()) }
-        AlertDialog(onDismissRequest = { showBm = false }, title = { Text("Bookmarks") },
+        AlertDialog(onDismissRequest = { showBm = false }, title = { Text(tr("Bookmarks", "الإشارات المرجعية")) },
             text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-                if (bms.isEmpty()) Text("No bookmarks yet. Open a site and use ⋮ → Add bookmark.")
+                if (bms.isEmpty()) Text(tr("No bookmarks yet. Open a site and use ⋮ → Add bookmark.", "لا توجد إشارات بعد. افتح موقعًا ثم ⋮ ← إضافة إشارة مرجعية."))
                 bms.forEach { b ->
-                    Row(Modifier.fillMaxWidth().clickable { Browser.current()?.web?.loadUrl(b.url); showBm = false }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { Browser.current()?.web?.loadUrl(b.url); showBm = false }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         Favicon(b64ToBitmap(b.icon), 36)
-                        Column(Modifier.weight(1f).padding(horizontal = 8.dp)) { Text(b.title.ifBlank { b.url }, maxLines = 1); Text(b.url, maxLines = 1, style = MaterialTheme.typography.bodySmall) }
-                        TextButton(onClick = { Store.deleteBookmark(b.url); bms = Store.bookmarks() }) { Text("✕") }
+                        Column(Modifier.weight(1f).padding(horizontal = 10.dp)) { Text(b.title.ifBlank { b.url }, maxLines = 1, overflow = TextOverflow.Ellipsis); Dim(b.url, maxLines = 1) }
+                        IconButton(onClick = { Store.deleteBookmark(b.url); bms = Store.bookmarks() }) { Ico(R.drawable.ic_delete, 20.dp) }
                     }
                 }
             } },
-            confirmButton = { TextButton(onClick = { showBm = false }) { Text("Close") } })
+            confirmButton = { TextButton(onClick = { showBm = false }) { Lbl(tr("Close", "إغلاق")) } })
     }
 }

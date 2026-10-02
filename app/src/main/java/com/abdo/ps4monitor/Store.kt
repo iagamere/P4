@@ -19,6 +19,7 @@ object Store {
     lateinit var sp: SharedPreferences
     lateinit var secure: SharedPreferences      // encrypted: PS4 profiles (incl. FTP passwords) and download records
     val theme = mutableIntStateOf(0)            // 0 system, 1 light, 2 dark
+    val dynamic = androidx.compose.runtime.mutableStateOf(true)   // use the phone's own (Material You) colours
 
     fun init(c: Context) {
         sp = c.getSharedPreferences("app", 0)
@@ -26,13 +27,15 @@ object Store {
         secure = EncryptedSharedPreferences.create(c, "secure", key,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM)
-        theme.intValue = sp.getInt("theme", 0)
+        theme.intValue = sp.getInt("theme", 0); dynamic.value = sp.getBoolean("dynamic", true); Lang.mode = sp.getInt("lang", 0)
         Ps4Repo.load(); DownloadRepo.load()
     }
     /** Defaults for the new engine. Old "interval" (1 s) key is intentionally not reused: too aggressive for HTTP. */
     fun settings() = Settings(sp.getInt("poll", 3), sp.getInt("timeout", 10), sp.getInt("stuck", 60),
         sp.getInt("notstarted", 180), sp.getBoolean("auto", false), sp.getBoolean("notif", true))
     fun putInt(k: String, v: Int) = sp.edit().putInt(k, v).apply()
+    fun setLang(i: Int) { Lang.mode = i; putInt("lang", i) }
+    fun setDynamic(b: Boolean) { dynamic.value = b; sp.edit().putBoolean("dynamic", b).apply() }
     fun setTheme(i: Int) { theme.intValue = i; putInt("theme", i) }
     fun nextNotifId(): Int { val n = sp.getInt("notifseq", 100) + 1; sp.edit().putInt("notifseq", n).apply(); return n }
 

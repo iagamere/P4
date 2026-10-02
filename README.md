@@ -16,3 +16,9 @@ Layout (package com.abdo.ps4monitor):
 - Notifier.kt / MonitorService.kt   one notification per download id; foreground service
 - MainActivity.kt (nav) / Ui.kt / HomeUi.kt / DownloadsUi.kt / BrowserUi.kt / SettingsUi.kt
 Old Engine.kt / Sender.kt (template "Learn" workflow) were removed.
+
+## 2.1
+- Downloads: per-card Stop/Delete, long-press multi-select (select all, stop, delete). "Stop" = stop monitoring only (no confirmed ezRemote cancel API); "Delete" = remove from list only.
+- Material You (phone colours) with purple fallback; rounded surfaces; status/nav bar tinted to the theme.
+- All emoji replaced by vector drawables (res/drawable/ic_*.xml, SVG path data); single-line ellipsised labels; FlowRow for button/chip groups.
+- Language: Settings -> Language (Phone / English / العربية), RTL layout, translated engine messages (Lang.kt: tr() and Tx).

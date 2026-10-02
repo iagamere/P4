@@ -351,7 +351,8 @@ object DownloadMonitor {
 
     /** Candidate file list for the UI (manual matching) and the "Monitor" button. */
     private fun updateUntracked(p: Ps4, dir: String, entries: List<FsEntry>) {
-        val claimed = claimedTmp(p, dir)
+        val claimed = claimedTmp(p, dir) + DownloadRepo.all.value.filter { it.ps4Id == p.id && it.state == DlState.STOPPED && it.tempPath != null && norm(it.dest) == dir }
+            .map { it.tempPath!!.substringAfterLast('/') }          // the user explicitly stopped these: do not offer them again
         val left = entries.filter { isTmp(it.name) && it.name !in claimed }
         val auto = Store.settings().auto
         val pendingHere = DownloadRepo.all.value.any { it.ps4Id == p.id && norm(it.dest) == dir && it.tempPath == null && it.sourceUrl.isNotBlank() && isWatch(it) }

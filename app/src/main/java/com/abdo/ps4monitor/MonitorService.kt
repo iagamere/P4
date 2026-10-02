@@ -30,7 +30,7 @@ class MonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         Notifier.init(this)
-        ServiceCompat.startForeground(this, 1, Notifier.summary(this, "Starting…"),
+        ServiceCompat.startForeground(this, 1, Notifier.summary(this, tr("Starting…", "جارٍ البدء…")),
             if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0)
         wl = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ps4monitor:poll").apply { acquire() }
         @Suppress("DEPRECATION")
@@ -49,7 +49,7 @@ class MonitorService : Service() {
                     if (idleSince == 0L) idleSince = System.currentTimeMillis()
                     if (System.currentTimeMillis() - idleSince > 5000) { stopSelf(); return@launch }   // grace period for a download submitted right now
                 } else idleSince = 0L
-                val text = if (n > 0) "Monitoring $n download${if (n > 1) "s" else ""}" else "Watching for a late start"
+                val text = if (n > 0) tr("Monitoring $n download${if (n > 1) "s" else ""}", "مراقبة $n تحميل") else tr("Watching for a late start", "مراقبة بدء متأخر")
                 if (text != lastText) { lastText = text; Notifier.updateSummary(this@MonitorService, text) }
                 delay(3000)
             }
