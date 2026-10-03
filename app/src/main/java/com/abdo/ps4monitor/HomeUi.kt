@@ -9,6 +9,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -23,7 +27,7 @@ private fun go(nav: NavController, r: String) = nav.navigate(r) { popUpTo(nav.gr
     Card(onClick = onClick, modifier = modifier, shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
         Column(Modifier.fillMaxWidth().padding(vertical = 14.dp, horizontal = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Ico(icon, 26.dp, MaterialTheme.colorScheme.onSecondaryContainer)
-            Lbl(label, Modifier.fillMaxWidth(), MaterialTheme.typography.labelLarge, MaterialTheme.colorScheme.onSecondaryContainer, textAlign = TextAlign.Center)
+            Lbl(label, Modifier.fillMaxWidth(), MaterialTheme.typography.labelMedium, MaterialTheme.colorScheme.onSecondaryContainer, textAlign = TextAlign.Center)
         }
     }
 
@@ -40,6 +44,7 @@ private fun go(nav: NavController, r: String) = nav.navigate(r) { popUpTo(nav.gr
     var probing by remember { mutableStateOf(false) }
     var probeMsg by remember { mutableStateOf("") }
     var pick by remember { mutableStateOf(false) }
+    var delTmp by remember { mutableStateOf<Pair<String, FsEntry>?>(null) }
     fun refresh() { val p = ps4 ?: return; probing = true; scope.launch { probeMsg = DownloadMonitor.probe(p); probing = false } }
     LaunchedEffect(ps4?.id) { if (ps4 != null) refresh() }
 
@@ -88,9 +93,10 @@ private fun go(nav: NavController, r: String) = nav.navigate(r) { popUpTo(nav.gr
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ActionTile(R.drawable.ic_link, tr("Add link", "إضافة رابط"), Modifier.weight(1f)) { Inbox.url.value = "" }
+                ActionTile(R.drawable.ic_link, tr("Link", "رابط"), Modifier.weight(1f)) { Inbox.url.value = "" }
                 ActionTile(R.drawable.ic_globe, tr("Browser", "المتصفح"), Modifier.weight(1f)) { go(nav, "browser") }
                 ActionTile(R.drawable.ic_download, tr("Downloads", "التحميلات"), Modifier.weight(1f)) { go(nav, "downloads") }
+                ActionTile(R.drawable.ic_folder, tr("Files", "الملفات"), Modifier.weight(1f)) { nav.navigate("files") }
             }
         }
         item { SectionTitle(tr("Active downloads", "التحميلات النشطة") + " (${active.size})") }
@@ -103,9 +109,15 @@ private fun go(nav: NavController, r: String) = nav.navigate(r) { popUpTo(nav.gr
             item { Dim(tr("These .tmp files are not tracked by this app (for example started directly in ezRemote).", "ملفات .tmp هذه غير متابَعة من التطبيق (مثلًا بدأت مباشرة من ezRemote).")) }
             items(loose, key = { it.first + "/" + it.second.name }) { (dir, e) ->
                 Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
-                    Row(Modifier.padding(start = 14.dp, top = 8.dp, bottom = 8.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) { Text(e.name, maxLines = 1, overflow = TextOverflow.Ellipsis); Dim(Fmt.bytes(e.size)) }
+                    Row(Modifier.padding(start = 14.dp, top = 8.dp, bottom = 8.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        val th by produceState<Thumb?>(null, dir, e.name, e.size) { value = ps4?.let { PkgThumbs.get(it, joinPath(dir, e.name), e.size, 96) } }
+                        Box(Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh), contentAlignment = Alignment.Center) {
+                            val b = th?.bmp
+                            if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else Ico(R.drawable.ic_schedule, 22.dp, MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Column(Modifier.weight(1f)) { Text(th?.title ?: e.name, maxLines = 1, overflow = TextOverflow.Ellipsis); Dim(Fmt.bytes(e.size)) }
                         TextButton(onClick = { ps4?.let { DownloadMonitor.adopt(it.id, dir, e) } }) { Lbl(tr("Monitor", "مراقبة")) }
+                        IconButton(onClick = { delTmp = dir to e }) { Ico(R.drawable.ic_delete, 22.dp, MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                 }
             }
@@ -117,4 +129,5 @@ private fun go(nav: NavController, r: String) = nav.navigate(r) { popUpTo(nav.gr
             item { Panel { events.takeLast(6).reversed().forEach { Dim(Tx.ev(it)) } } }
         }
     }
+    delTmp?.let { d -> if (ps4 != null) ConfirmPs4Delete(ps4, listOf(d), onDone = { DownloadMonitor.kick(); refresh() }, close = { delTmp = null }) }
 }

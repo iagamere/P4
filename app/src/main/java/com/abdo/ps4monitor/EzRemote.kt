@@ -1,5 +1,7 @@
 package com.abdo.ps4monitor
 import org.json.JSONArray
+import java.text.SimpleDateFormat
+import java.util.Locale
 import org.json.JSONObject
 import java.io.IOException
 import java.net.*
@@ -72,6 +74,51 @@ object EzRemote {
         } finally { c.disconnect() }
     }
 
+    // ---- confirmed from ezRemote http_server.cpp ----
+    /** "date" is "YYYY-MM-DD HH:MM:SS" (PS4 wall clock). Parsed with the phone zone so it is displayed unchanged. */
+    private fun parseDate(t: String): Long = runCatching { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).parse(t)?.time ?: 0L }.getOrDefault(0L)
+
+    class OpResult(val ok: Boolean, val message: String)
+    private fun post(ps4: Ps4, path: String, body: org.json.JSONObject, timeoutMs: Int): OpResult {
+        val c = conn(ps4, path, timeoutMs)
+        try {
+            c.outputStream.use { it.write(body.toString().toByteArray()) }
+            val code = c.responseCode; val text = readBody(c)
+            if (code !in 200..299) return OpResult(false, "ezRemote answered HTTP $code.")
+            val r = runCatching { JSONObject(text).optJSONObject("result") }.getOrNull()
+            return if (r != null && r.optBoolean("success", false)) OpResult(true, "")
+                   else OpResult(false, r?.optString("error")?.takeIf { it.isNotBlank() && it != "null" } ?: "ezRemote refused the request.")
+        } finally { c.disconnect() }
+    }
+    /** POST /__local__/remove {"items":[...]}  — recursive on the PS4 (FS::RmRecursive); refused while ezRemote is busy with another activity. */
+    fun remove(ps4: Ps4, items: List<String>, timeoutMs: Int) = post(ps4, "/__local__/remove", JSONObject().put("items", JSONArray(items)), timeoutMs)
+    /** POST /__local__/rename {"item","newItemPath"} — ezRemote ignores the result of the rename and always answers success, so callers must verify by listing. */
+    fun rename(ps4: Ps4, from: String, to: String, timeoutMs: Int) = post(ps4, "/__local__/rename", JSONObject().put("item", from).put("newItemPath", to), timeoutMs)
+
+    /**
+     * GET /__local__/downloadFile?path=...  with a Range header: reads [length] bytes at [offset] and drops the connection.
+     * Whether this ezRemote build honours Range is not visible in the source (it depends on its httplib); if it answers 200 the
+     * first bytes are read (or skipped, capped at 64 MB) and the rest of the file is never pulled.
+     * Only call this for paths that were just listed: the handler opens the file without checking that it exists.
+     */
+    fun readRange(ps4: Ps4, path: String, offset: Long, length: Int, timeoutMs: Int): ByteArray {
+        val c = URL("http://${ps4.host}:${ps4.httpPort}/__local__/downloadFile?path=" + java.net.URLEncoder.encode(path, "UTF-8")).openConnection() as HttpURLConnection
+        c.requestMethod = "GET"; c.connectTimeout = timeoutMs; c.readTimeout = timeoutMs
+        c.setRequestProperty("Range", "bytes=$offset-${offset + length - 1}")
+        try {
+            val code = c.responseCode
+            if (code != 206 && code != 200) throw EzError("ezRemote file read answered HTTP $code")
+            val ins = c.inputStream
+            var skip = if (code == 200 && offset > 0) offset else 0L
+            if (skip > (64L shl 20)) throw EzError("ezRemote ignored the range request and the offset is too large")
+            val tmp = ByteArray(65536)
+            while (skip > 0) { val r = ins.read(tmp, 0, minOf(skip, tmp.size.toLong()).toInt()); if (r < 0) break; skip -= r }
+            val buf = ByteArray(length); var n = 0
+            while (n < length) { val r = ins.read(buf, n, length - n); if (r < 0) break; n += r }
+            return buf.copyOf(n)
+        } finally { c.disconnect() }      // closes the socket without draining a multi-GB body
+    }
+
     fun parse(text: String): List<FsEntry> {
         val t = text.trim()
         val arr: JSONArray = when {
@@ -89,7 +136,7 @@ object EzRemote {
             val rights = o.optString("rights")
             val dir = type == "d" || "dir" in type || "folder" in type || rights.startsWith("d")
             val size = when (val v = o.opt("size")) { is Number -> v.toLong(); is String -> v.toLongOrNull() ?: 0L; else -> 0L }
-            FsEntry(n, size, 0L, dir)
+            FsEntry(n, size, parseDate(o.optString("date")), dir)
         }
     }
     private fun isEmptyListEnvelope(o: JSONObject) = o.keys().asSequence().all { k -> o.opt(k).let { it !is JSONArray || it.length() == 0 } }

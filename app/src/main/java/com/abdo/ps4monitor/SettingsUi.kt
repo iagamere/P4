@@ -73,7 +73,7 @@ import kotlinx.coroutines.launch
             Button(onClick = { ctx.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }) { Lbl(tr("Battery settings", "إعدادات البطارية")) }
         } }
         item { NavRow(R.drawable.ic_search, tr("Advanced", "متقدم"), tr("Debug log, history", "سجل التصحيح، السجل القديم")) { nav.navigate("settings/advanced") } }
-        item { Dim("PS4 Download Monitor 2.1") }
+        item { Dim("PS4 Download Monitor 2.5") }
     }
 }
 
@@ -81,6 +81,9 @@ import kotlinx.coroutines.launch
     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         BackHeader(tr("Advanced", "متقدم"), nav)
         Panel {
+            ToggleRow(tr("Add .pkg automatically to finished PKG files that lack it", "إضافة .pkg تلقائيًا لملفات PKG المكتملة التي تفتقده"), "autopkg", true)
+            Dim(tr("Only real PS4 PKG files (checked by their header) are renamed, through ezRemote, and the result is verified.", "تُعاد تسمية ملفات PKG الحقيقية فقط (يُفحص ترويستها) عبر ezRemote ويُتحقق من النتيجة."))
+            HorizontalDivider()
             ToggleRow(tr("Auto-monitor growing .tmp files this app did not start", "مراقبة ملفات .tmp المتنامية تلقائيًا إن لم يبدأها التطبيق"), "auto", false)
             Dim(tr("Only applies while at least one download is being monitored on that PS4. A .tmp is adopted only after it is seen growing.", "يعمل فقط أثناء مراقبة تحميل واحد على الأقل على ذلك الـPS4، ولا يُعتمد ملف .tmp إلا بعد رؤيته ينمو."))
         }

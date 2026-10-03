@@ -100,7 +100,7 @@ object DownloadMonitor {
             ?: Uri.parse(u).host ?: "download"
     }.getOrDefault("download")
 
-    suspend fun submit(ps4: Ps4, url: String, destIn: String, manualSize: Long = 0L, retryOf: Download? = null): SubmitResult =
+    suspend fun submit(ps4: Ps4, url: String, destIn: String, manualSize: Long = 0L, retryOf: Download? = null, fileName: String? = null, sendName: Boolean = false): SubmitResult =
         withContext(Dispatchers.IO) {
             val u = url.trim()
             if (!Regex("^https?://\\S+$").matches(u)) return@withContext SubmitResult.Invalid("That is not a valid http(s) link.")
@@ -109,18 +109,20 @@ object DownloadMonitor {
             if (retryOf == null) DownloadRepo.all.value.firstOrNull {
                 it.ps4Id == ps4.id && it.sourceUrl == u && norm(it.dest) == dest && it.state.active && !it.superseded
             }?.let { return@withContext SubmitResult.Duplicate("This link is already being downloaded to ${ps4.name}.") }
+            val fname = fileName?.let { Names.clean(it) }?.takeIf { it.isNotEmpty() }
+            val destSend = if (sendName && fname != null) dest.trimEnd('/') + "/" + fname else dest      // full path only when the user kept "send name" on
             val s = Store.settings()
             val now = System.currentTimeMillis()
             val base = fetchList(ps4, dest, s)?.associate { it.name to it.size }       // files that exist BEFORE submission
             if (base == null) d("Could not snapshot $dest before submitting; file matching will need name evidence")
             val id = UUID.randomUUID().toString()
             val keep = retryOf?.takeIf { it.expectedSource.startsWith("entered") }
-            DownloadRepo.add(Download(id, ps4.id, (retryOf?.attempt ?: 0) + 1, retryOf?.id, u, nameFromUrl(u), dest,
+            DownloadRepo.add(Download(id, ps4.id, (retryOf?.attempt ?: 0) + 1, retryOf?.id, u, fname ?: nameFromUrl(u), dest,
                 expectedSize = manualSize.takeIf { it > 0 } ?: keep?.expectedSize,
                 expectedSource = if (manualSize > 0) "entered by you" else if (keep != null) "entered by you" else "",
-                state = DlState.SUBMITTING, createdAt = now, submittedAt = now, notificationId = Store.nextNotifId(), baseline = base))
-            d("Download request submitted (${ps4.name}, dest=$dest)")
-            when (val r = EzRemote.submit(ps4, u, dest)) {
+                state = DlState.SUBMITTING, createdAt = now, submittedAt = now, notificationId = Store.nextNotifId(), baseline = base, fileName = fname))
+            d("Download request submitted (${ps4.name}, dest=$destSend)")
+            when (val r = EzRemote.submit(ps4, u, destSend)) {
                 is EzRemote.Submit.Rejected -> { DownloadRepo.remove(id); d("State: rejected — ${r.message}"); SubmitResult.Rejected(r.message) }
                 is EzRemote.Submit.Unreachable -> { DownloadRepo.remove(id); d("State: not sent — ${r.message}"); SubmitResult.Unreachable(r.message) }
                 is EzRemote.Submit.Accepted -> {
@@ -147,7 +149,7 @@ object DownloadMonitor {
         val p = Ps4Repo.get(old.ps4Id) ?: return SubmitResult.Invalid("That PS4 profile no longer exists.")
         if (old.sourceUrl.isBlank()) return SubmitResult.Invalid("This download was detected on the PS4, so there is no link to resend.")
         if (old.state !in setOf(DlState.NOT_STARTED, DlState.FAILED, DlState.STOPPED)) return SubmitResult.Invalid("Retry is only available for failed or not-started downloads.")
-        val r = submit(p, old.sourceUrl, old.dest, 0L, old)
+        val r = submit(p, old.sourceUrl, old.dest, 0L, old, old.fileName, old.fileName != null && Store.sp.getBoolean("sendpath", false))
         if (r is SubmitResult.Accepted) { DownloadRepo.update(id) { it.copy(superseded = true) }; d("Retry created attempt ${old.attempt + 1}") }
         return r
     }
@@ -167,7 +169,7 @@ object DownloadMonitor {
         DownloadRepo.update(id) { it.copy(state = DlState.STOPPED, note = "Monitoring stopped by you. The PS4 download itself is not cancelled.", speed = 0.0, etaSec = -1) }
         d("${x.displayName}: monitoring stopped by user"); syncNotifs()
     }
-    fun remove(id: String) { Notifier.cancel(DownloadRepo.get(id)?.notificationId ?: return); rts.remove(id); DownloadRepo.remove(id) }
+    fun remove(id: String) { Notifier.cancel(DownloadRepo.get(id)?.notificationId ?: return); rts.remove(id); pps.remove(id); PkgStore.delete("d:$id"); DownloadRepo.remove(id) }
     fun setExpected(id: String, bytes: Long) {
         DownloadRepo.update(id) { it.copy(expectedSize = bytes, expectedSource = "entered by you") }; d("Expected size entered by user: ${Fmt.bytes(bytes)}")
     }
@@ -382,7 +384,7 @@ object DownloadMonitor {
             return
         }
         val tmpName = d0.tempPath.substringAfterLast('/')
-        if (d0.finalPath != null) { verifyFinal(d0, rt, byName, s, now); return }
+        if (d0.finalPath != null) { verifyFinal(p, d0, rt, byName, s, now); return }
         val e = byName[tmpName]
 
         if (e == null) {                                    // temp file gone: finished? cancelled? renamed?
@@ -410,6 +412,7 @@ object DownloadMonitor {
 
         rt.absent = 0
         val size = e.size
+        maybeProbe(p, d0, d0.tempPath, size, now)
         if (rt.firstT == 0L) { rt.firstT = now; rt.firstS = size; rt.lastGrow = now }
         if (rt.prevS >= 0 && size < rt.prevS) { rt.win.clear(); rt.prevS = -1; rt.lastGrow = now; d("${d0.displayName}: file size decreased; treating as restarted") }
         var cur = 0.0; var firstGrowth = false
@@ -425,7 +428,7 @@ object DownloadMonitor {
         rt.speeds = (rt.speeds + cur.toFloat()).takeLast(maxOf(30, 300 / s.interval))
         rt.lastSize = size
         val exp = d0.expectedSize?.takeIf { it > 0 }
-        val margin = if (d0.expectedSource.contains("confirmed")) (1L shl 16) else maxOf(1L shl 20, (exp ?: 0L) / 1000)
+        val margin = if (d0.expectedSource.contains("confirmed") || d0.expectedSource.contains("agrees")) (1L shl 16) else maxOf(1L shl 20, (exp ?: 0L) / 1000)
         val eta = if (exp != null && size < exp && avg > 1.0) ((exp - size) / avg).toLong() else -1L      // never a fake ETA
         val atExp = exp != null && size >= exp - margin
 
@@ -452,7 +455,7 @@ object DownloadMonitor {
         }
     }
 
-    private fun verifyFinal(d0: Download, rt: Rt, byName: Map<String, FsEntry>, s: Settings, now: Long) {
+    private fun verifyFinal(p: Ps4, d0: Download, rt: Rt, byName: Map<String, FsEntry>, s: Settings, now: Long) {
         val e = byName[d0.finalPath!!.substringAfterLast('/')]
         if (e == null) {
             rt.finalAbsent++
@@ -460,12 +463,13 @@ object DownloadMonitor {
             return
         }
         rt.finalAbsent = 0
+        maybeProbe(p, d0, d0.finalPath, e.size, now)
         if (e.size != rt.finalSize) { rt.finalSize = e.size; rt.finalStable = 0; rt.finalSince = now } else rt.finalStable++
         val stable = rt.finalStable >= 3 && now - rt.finalSince >= maxOf(10_000L, 3000L * s.interval)
         DownloadRepo.update(d0.id) { it.copy(currentSize = e.size, lastSeenAt = now) }
         if (!stable) { transition(d0, DlState.VERIFYING, "Checking downloaded file…"); return }
         val exp = d0.expectedSize?.takeIf { it > 0 }
-        val margin = if (d0.expectedSource.contains("confirmed")) (1L shl 16) else maxOf(1L shl 20, (exp ?: 0L) / 1000)
+        val margin = if (d0.expectedSource.contains("confirmed") || d0.expectedSource.contains("agrees")) (1L shl 16) else maxOf(1L shl 20, (exp ?: 0L) / 1000)
         when {
             exp == null -> complete(d0, e.size, "The finished file is stable. Expected size was unknown, so this was verified by file lifecycle only.")
             abs(e.size - exp) <= margin -> complete(d0, e.size, "The finished file matches the expected size.")
@@ -476,6 +480,93 @@ object DownloadMonitor {
     private fun complete(d0: Download, size: Long, why: String) {
         transition(d0, DlState.COMPLETED, why, f = { it.copy(currentSize = size, completedAt = System.currentTimeMillis(), speed = 0.0, etaSec = -1) })
         ev("${d0.displayName}: completed")
+        if (Store.sp.getBoolean("autopkg", true) && DownloadRepo.get(d0.id)?.finalPath?.lowercase()?.endsWith(".pkg") == false)
+            scope.launch { val m = renamePkg(d0.id); d("Auto .pkg: $m") }
+    }
+
+    /**
+     * A finished file that really is a PS4 PKG (magic checked) but has no ".pkg" name gets ".pkg" appended through ezRemote
+     * POST /__local__/rename. ezRemote ignores the rename result, so success is only reported after listing the folder again.
+     */
+    suspend fun renamePkg(id: String): String = withContext(Dispatchers.IO) {
+        val dl = DownloadRepo.get(id) ?: return@withContext tr("Download not found.", "التحميل غير موجود.")
+        val p = Ps4Repo.get(dl.ps4Id) ?: return@withContext tr("That PS4 profile no longer exists.", "ملف هذا الـPS4 لم يعد موجودًا.")
+        val path = dl.finalPath ?: return@withContext tr("The finished file is not known yet.", "الملف المكتمل غير معروف بعد.")
+        if (path.lowercase().endsWith(".pkg")) return@withContext tr("The name already ends with .pkg.", "الاسم ينتهي بـ .pkg بالفعل.")
+        if (!PkgInspector.httpOn(p)) return@withContext tr("Renaming uses the ezRemote web connection, which is off for this PS4.", "إعادة التسمية تستخدم اتصال ويب ezRemote وهو متوقف لهذا الجهاز.")
+        val isPkg = try { PkgInspector.isPkg(p, path) } catch (e: Exception) { return@withContext Tx.t(PkgInspector.friendly(e)) }
+        if (!isPkg) return@withContext tr("This file is not a PS4 PKG, so it was not renamed.", "هذا الملف ليس PKG للـPS4 لذلك لم تُغيَّر تسميته.")
+        val dir = path.substringBeforeLast('/', "/").ifEmpty { "/" }; val name = path.substringAfterLast('/'); val newName = "$name.pkg"
+        val before = try { PkgInspector.browse(p, dir).map { it.name }.toSet() } catch (e: Exception) { return@withContext Tx.t(PkgInspector.friendly(e)) }
+        if (newName in before) return@withContext tr("A file named $newName already exists.", "يوجد ملف باسم $newName بالفعل.")
+        val target = (if (dir == "/") "" else dir) + "/" + newName
+        try { val r = EzRemote.rename(p, path, target, Store.settings().timeout * 1000); d("ezRemote rename: ok=${r.ok} ${r.message}") }
+        catch (e: Exception) { return@withContext Tx.t(EzRemote.friendly(e)) }
+        val after = try { PkgInspector.browse(p, dir).map { it.name }.toSet() } catch (e: Exception) { emptySet() }
+        if (newName in after && name !in after) {
+            DownloadRepo.update(id) { it.copy(finalPath = target, note = tr("Renamed to $newName", "أُعيدت تسميته إلى $newName")) }
+            d("Renamed on PS4: $name -> $newName"); ev("${dl.displayName}: renamed to .pkg")
+            tr("Renamed to $newName", "أُعيدت تسميته إلى $newName")
+        } else tr("The PS4 did not rename the file.", "لم يُعد الـPS4 تسمية الملف.")
+    }
+
+    /** Deletes the file(s) of a download from the PS4 (FTP DELE). Optionally removes the record too. Returns a message for the user. */
+    suspend fun deleteFromPs4(id: String, removeRecord: Boolean): String = withContext(Dispatchers.IO) {
+        val dl = DownloadRepo.get(id) ?: return@withContext tr("Download not found.", "التحميل غير موجود.")
+        val p = Ps4Repo.get(dl.ps4Id) ?: return@withContext tr("That PS4 profile no longer exists.", "ملف هذا الـPS4 لم يعد موجودًا.")
+        val paths = listOfNotNull(dl.tempPath, dl.finalPath).distinct()
+        if (paths.isEmpty()) {
+            if (removeRecord) remove(id)
+            return@withContext tr("No file on the PS4 is linked to this download yet, so only the record was removed.", "لا يوجد ملف على الـPS4 مرتبط بهذا التحميل بعد، لذلك حُذف السجل فقط.")
+        }
+        val wasActive = dl.state.active
+        if (wasActive) stop(id)                     // so the vanishing file is not reported as a failure
+        val out = try { Remote.delete(p, paths.map { Remote.Item(it, false) }, if (wasActive) 5000L else 0L) }
+                  catch (e: Exception) { if (wasActive) resume(id); return@withContext Tx.t(PkgInspector.friendly(e)) }
+        if (out.deleted.isEmpty() && wasActive) resume(id)
+        val parts = ArrayList<String>(); parts += Remote.summary(out)
+        if (wasActive && out.deleted.isNotEmpty()) parts += tr("If ezRemote still has the file open it may keep transferring data in the background: this app has no confirmed way to cancel that transfer.",
+            "إذا كان ezRemote ما زال يفتح الملف فقد يواصل نقل البيانات في الخلفية: لا يملك التطبيق وسيلة مؤكدة لإلغاء هذا النقل.")
+        if (removeRecord && out.failed.isEmpty() && out.reappeared.isEmpty()) remove(id)
+        else DownloadRepo.update(id) { it.copy(note = Remote.summary(out)) }
+        parts.joinToString("\n")
+    }
+
+    // ---------------- PKG probe: title, icon and total size read from the PKG header (FTP, short sessions) ----------------
+    private class PP { var attempts = 0; var nextAt = 0L; var done = false; @Volatile var running = false }
+    private val pps = ConcurrentHashMap<String, PP>()
+
+    private fun maybeProbe(p: Ps4, dl: Download, path: String, size: Long, now: Long) {
+        if (!PkgInspector.canRead(p) || size < PkgFormat.HEADER_MIN) return
+        val st = pps.getOrPut(dl.id) { PP() }
+        if (st.done || st.running || now < st.nextAt) return
+        st.running = true; st.attempts++
+        scope.launch {
+            try {
+                val r = PkgInspector.mutex.let { m -> m.lock(); try { PkgInspector.inspect(p, path, size, "d:${dl.id}", full = false) } finally { m.unlock() } }
+                applyProbe(dl, r, st, System.currentTimeMillis())
+            } catch (e: CancellationException) { throw e } catch (e: Exception) { d("PKG probe error: ${e.javaClass.simpleName}: ${e.message}"); st.nextAt = System.currentTimeMillis() + 60_000
+            } finally { st.running = false }
+        }
+    }
+    private fun applyProbe(dl: Download, r: PkgInspector.Result, st: PP, now: Long) {
+        val info = r.info
+        when {
+            r.notPkg -> { st.done = true; d("PKG probe: ${dl.displayName} is not a PS4 PKG (no further probing)") }
+            info != null -> {
+                DownloadRepo.update(dl.id) { x ->
+                    var y = x.copy(pkgTitle = info.title ?: x.pkgTitle, titleId = info.titleId ?: x.titleId, iconReady = x.iconReady || info.hasIcon)
+                    val tot = info.totalSize
+                    if (tot != null && info.sizeTrusted && !x.expectedSource.startsWith("entered") && !x.expectedSource.contains("confirmed") && x.expectedSize != tot)
+                        y = y.copy(expectedSize = tot, expectedSource = info.sizeNote)
+                    y
+                }
+                if (info.totalSize != null && !info.sizeTrusted) d("PKG header says ${Fmt.bytes(info.totalSize)} but the fields do not agree; NOT applied")
+                if (info.complete || st.attempts >= 12) st.done = true else st.nextAt = now + 20_000L * st.attempts
+                syncNotifs()
+            }
+            else -> { st.nextAt = now + 30_000L * st.attempts; if (st.attempts >= 6) st.done = true }
+        }
     }
 
     // ---------------- notifications (one stable id per download) ----------------

@@ -9,6 +9,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.graphics.Bitmap
+import android.net.Uri
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -24,6 +31,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+/** Navigation route of the PKG inspector (path is URL-encoded because it contains slashes). */
+fun pkgRoute(ps4Id: String, path: String) = "pkg/${Uri.encode(ps4Id)}/${Uri.encode(path)}"
 
 object Inbox { val url = mutableStateOf<String?>(null) }    // non-null => "Download to PS4" dialog is open
 
@@ -87,12 +97,18 @@ fun resultText(r: SubmitResult) = Tx.t(when (r) {
     val container = if (selected == true) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow
     Card(Modifier.fillMaxWidth().clip(shape).combinedClickable(onClick = onOpen, onLongClick = onLong), shape = shape, colors = CardDefaults.cardColors(containerColor = container)) {
         Row(Modifier.padding(start = 14.dp, top = 14.dp, bottom = 14.dp, end = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(bg), contentAlignment = Alignment.Center) {
-                Ico(if (selected == true) R.drawable.ic_check else stateIcon(d.state), 24.dp, fg)
+            val art by produceState<Bitmap?>(null, d.id, d.iconReady, d.tempPath, d.finalPath) { value = PkgThumbs.forDownload(d, 160) }
+            val pic = art
+            Box(Modifier.size(56.dp)) {
+                if (pic != null) Image(pic.asImageBitmap(), null, Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop)
+                else Box(Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).background(bg), contentAlignment = Alignment.Center) {
+                    Ico(if (selected == true) R.drawable.ic_check else stateIcon(d.state), 26.dp, fg) }
+                if (pic != null) Box(Modifier.align(Alignment.BottomEnd).size(22.dp).clip(CircleShape).background(bg).border(2.dp, container, CircleShape), contentAlignment = Alignment.Center) {
+                    Ico(if (selected == true) R.drawable.ic_check else stateIcon(d.state), 13.dp, fg) }
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(d.displayName, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Dim(ps4?.name ?: tr("Removed PS4", "جهاز محذوف"), maxLines = 1)
+                Text(d.pkgTitle ?: d.displayName, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Dim(listOfNotNull(ps4?.name ?: tr("Removed PS4", "جهاز محذوف"), d.titleId).joinToString("  •  "), maxLines = 1)
                 val exp = d.expectedSize?.takeIf { it > 0 }
                 if (d.currentSize > 0 || d.state == DlState.COMPLETED)
                     Text(if (exp != null) "${Fmt.bytes(d.currentSize)} / ${Fmt.bytes(exp)}" + (d.pct?.let { "  •  $it%" } ?: "") else Fmt.bytes(d.currentSize),
@@ -177,6 +193,12 @@ fun resultText(r: SubmitResult) = Tx.t(when (r) {
     val p = ps4s.firstOrNull { it.id == sel }
     var dest by remember(sel) { mutableStateOf(p?.dest ?: "/data/pkg") }
     var sizeTxt by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf(initialUrl.takeIf { it.startsWith("http") }?.let { Names.fromUrl(it) }.orEmpty()) }
+    var nameEdited by remember { mutableStateOf(false) }
+    var sendName by remember { mutableStateOf(Store.sp.getBoolean("sendpath", false)) }
+    val firstLink = Regex("""https?://\S+""").find(url)?.value
+    val linkCount = Regex("""https?://\S+""").findAll(url).count()
+    LaunchedEffect(firstLink) { if (!nameEdited) name = firstLink?.let { Names.fromUrl(it) }.orEmpty() }
     var msg by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val ctx = LocalContext.current; val scope = rememberCoroutineScope()
@@ -190,6 +212,12 @@ fun resultText(r: SubmitResult) = Tx.t(when (r) {
                 else Text("PS4: ${ps4s[0].name}", fontWeight = FontWeight.SemiBold)
                 OutlinedTextField(url, { url = it }, label = { Text(tr("Link(s), one per line", "الرابط (رابط في كل سطر)")) }, minLines = 2, maxLines = 6)
                 OutlinedTextField(dest, { dest = it }, label = { Text(tr("Destination on the PS4", "الوجهة على الـPS4")) }, singleLine = true)
+                if (linkCount <= 1) OutlinedTextField(name, { name = it; nameEdited = true }, label = { Text(tr("File name on the PS4", "اسم الملف على الـPS4")) }, singleLine = true,
+                    supportingText = { Text(tr("Must end with .pkg to appear in the PS4 package list", "يجب أن ينتهي بـ .pkg ليظهر في قائمة الحزم")) })
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.weight(1f)) { Text(tr("Send the file name to ezRemote", "إرسال اسم الملف إلى ezRemote")); Dim(tr("Experimental: sends destination as folder/name. Turn off if downloads stop starting.", "تجريبي: يرسل الوجهة بصيغة مجلد/اسم. أوقفه إن توقفت التحميلات عن البدء.")) }
+                    Switch(sendName, { sendName = it; Store.sp.edit().putBoolean("sendpath", it).apply() })
+                }
                 OutlinedTextField(sizeTxt, { sizeTxt = it }, label = { Text(tr("File size (optional), e.g. 47.5 GB", "حجم الملف (اختياري) مثل 47.5 GB")) }, singleLine = true)
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (msg.isNotEmpty()) Text(msg, fontWeight = FontWeight.SemiBold)
@@ -205,7 +233,8 @@ fun resultText(r: SubmitResult) = Tx.t(when (r) {
                 val out = StringBuilder(); var ok = 0
                 links.forEachIndexed { i, l ->
                     if (i > 0) delay(4000)
-                    val r = DownloadMonitor.submit(target, l, dest, if (links.size == 1) Fmt.parseSize(sizeTxt).takeIf { sizeTxt.isNotBlank() } ?: 0L else 0L)
+                    val r = DownloadMonitor.submit(target, l, dest, if (links.size == 1) Fmt.parseSize(sizeTxt).takeIf { sizeTxt.isNotBlank() } ?: 0L else 0L,
+                        null, if (sendName) (if (links.size == 1) name.trim().ifBlank { Names.fromUrl(l) } else Names.fromUrl(l)) else null, sendName)
                     if (r is SubmitResult.Accepted) ok++
                     out.append(if (links.size > 1) "${i + 1}/${links.size}: " else "").append(resultText(r)).append('\n'); msg = out.toString()
                 }
