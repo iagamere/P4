@@ -218,6 +218,7 @@ object PkgInspector {
     fun friendly(e: Exception) = when (e) { is PkgError -> e.message ?: "PKG error"; is EzError -> EzRemote.friendly(e); is SoftError, is FtpError -> e.message ?: "FTP error"; is IOException -> if (e.message?.startsWith("RETR") == true) "The PS4 would not let the file be read." else Ftp.friendly(e); else -> Ftp.friendly(e) }
 
     fun sizeOf(p: Ps4, path: String): Long? {
+        if (httpOn(p)) try { val n = EzRemote.fileSize(p, path, Store.settings().timeout * 1000); if (n > 0) return n } catch (e: Exception) { }      // cheap single-file query
         val dir = path.substringBeforeLast('/', "/").ifEmpty { "/" }; val name = path.substringAfterLast('/')
         return browse(p, dir).firstOrNull { it.name == name }?.size
     }

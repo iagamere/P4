@@ -45,3 +45,13 @@ Old Engine.kt / Sender.kt (template "Learn" workflow) were removed.
 
 ## 2.5
 - Artwork now loads by itself everywhere (Files rows, Downloads cards/detail, Home): PkgThumbs reads the PKG header on demand, one read at a time, disk-cached, failures remembered (no repeated hits while scrolling). Old/completed downloads get their icon and title the first time they are shown.
+
+## 3.0 — everything http_server.cpp offers that makes sense for a download companion
+- Install a .pkg on the PS4 (POST /__local__/install) from Files, the PKG inspector and finished downloads; optional auto-install (off by default).
+- Install directly from a link (POST /__local__/install_url, enable_rpi, no disk copy) from the send dialog.
+- Files: new folder (createFolder), rename (rename), copy / cut / paste (copy, move) with overwrite warning, extract zip/rar/7z (extract), delete (remove), save a PS4 file to the phone (downloadFile via DownloadManager).
+- Upload from the phone (multipart /__local__/upload, 8 MiB chunks, resume via uploadResumeSize, size verified at the end).
+- Text viewer/editor (getContent / edit, <= 256 KB).
+- uploadResumeSize is used as a cheap single-file size query.
+- Long operations (Ops.kt) run in an app-level scope with the foreground service; one at a time; results verified by listing because ezRemote ignores several return values.
+- Deliberately NOT used: GET /stop (stops ezRemote), POST /compress (writes to its own folder, ignores `destination`, can answer twice), copy with `singleFilename` (only handles folders), /permission (unsupported).

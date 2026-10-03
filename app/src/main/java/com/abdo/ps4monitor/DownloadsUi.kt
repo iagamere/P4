@@ -107,6 +107,7 @@ private fun stopToast(ctx: android.content.Context) = Toast.makeText(ctx, tr("Mo
     val d = all.firstOrNull { it.id == id }
     val ctx = LocalContext.current; val scope = rememberCoroutineScope()
     var confirm by remember { mutableStateOf<Pair<List<String>, Boolean>?>(null) }
+    var confirmInstall by remember { mutableStateOf(false) }
     Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         BackHeader(tr("Download", "التحميل"), nav)
         if (d == null) { Text(tr("This download was removed.", "تم حذف هذا التحميل.")); return@Column }
@@ -178,6 +179,8 @@ private fun stopToast(ctx: android.content.Context) = Toast.makeText(ctx, tr("Mo
                 OutlinedButton(onClick = { DownloadMonitor.resume(d.id) }) { Lbl(tr("Resume monitoring", "استئناف المراقبة")) }
             if (d.state == DlState.COMPLETED && d.finalPath != null && !d.finalPath.lowercase().endsWith(".pkg"))
                 FilledTonalButton(onClick = { scope.launch { Toast.makeText(ctx, DownloadMonitor.renamePkg(d.id), Toast.LENGTH_LONG).show() } }) { Ico(R.drawable.ic_package, 18.dp); Spacer(Modifier.width(6.dp)); Lbl(tr("Add .pkg", "إضافة .pkg")) }
+            if (d.state == DlState.COMPLETED && ps4 != null && PkgInspector.httpOn(ps4) && d.finalPath?.lowercase()?.endsWith(".pkg") == true)
+                Button(onClick = { confirmInstall = true }) { Ico(R.drawable.ic_install, 18.dp); Spacer(Modifier.width(6.dp)); Lbl(tr("Install", "تثبيت")) }
             OutlinedButton(onClick = { confirm = listOf(d.id) to false }) { Ico(R.drawable.ic_delete, 18.dp, MaterialTheme.colorScheme.error); Spacer(Modifier.width(6.dp)); Lbl(tr("Delete", "حذف"), color = MaterialTheme.colorScheme.error) }
             if (d.tempPath != null || d.finalPath != null) Button(onClick = { confirm = listOf(d.id) to true }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Ico(R.drawable.ic_delete, 18.dp); Spacer(Modifier.width(6.dp)); Lbl(tr("Delete from PS4", "حذف من الـPS4")) }
             if (ps4 != null && PkgInspector.canRead(ps4) && (d.tempPath ?: d.finalPath) != null && (d.iconReady || (d.finalPath ?: d.tempPath).orEmpty().lowercase().contains("pkg") || d.displayName.lowercase().endsWith(".pkg")))
@@ -186,5 +189,6 @@ private fun stopToast(ctx: android.content.Context) = Toast.makeText(ctx, tr("Mo
         if (d.state.active) Dim(tr("“Stop” only stops this app from watching; it does not cancel the download on the PS4 (ezRemote has no confirmed cancel API). Retry sends a NEW request and is never automatic.",
             "«إيقاف» يوقف مراقبة التطبيق فقط ولا يلغي التحميل على الـPS4 (لا يوجد API مؤكد للإلغاء في ezRemote). إعادة المحاولة ترسل طلبًا جديدًا ولا تتم تلقائيًا."))
     }
+    if (confirmInstall) { val p = Ps4Repo.get(d?.ps4Id); val f = d?.finalPath; if (p != null && f != null) ConfirmInstall(p, listOf(f), close = { confirmInstall = false }) }
     confirm?.let { (ids, also) -> ConfirmDelete(ids, onDone = { nav.popBackStack() }, close = { confirm = null }, defaultAlsoPs4 = also) }
 }

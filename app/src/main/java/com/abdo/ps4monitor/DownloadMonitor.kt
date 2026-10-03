@@ -57,11 +57,11 @@ object DownloadMonitor {
         }
     }
     fun clearLog() { log.value = emptyList() }
-    private fun ev(m: String) = events.update { (it + "${Fmt.time(System.currentTimeMillis())}  $m").takeLast(40) }
+    fun ev(m: String) = events.update { (it + "${Fmt.time(System.currentTimeMillis())}  $m").takeLast(40) }
 
     fun init(c: Context) { app = c.applicationContext }
     fun kick() { wake.tryEmit(Unit) }
-    private fun startSvc() { runCatching { ContextCompat.startForegroundService(app, Intent(app, MonitorService::class.java)) } }
+    fun startSvc() { runCatching { ContextCompat.startForegroundService(app, Intent(app, MonitorService::class.java)) } }
     fun norm(p: String): String { val t = p.trim().trimEnd('/'); return if (t.isEmpty()) "/" else if (t.startsWith("/")) t else "/$t" }
     private fun upStatus(id: String, f: (Ps4Status) -> Ps4Status) = status.update { m -> m + (id to f(m[id] ?: Ps4Status())) }
     fun isWatch(d: Download, now: Long = System.currentTimeMillis()) =
@@ -480,8 +480,13 @@ object DownloadMonitor {
     private fun complete(d0: Download, size: Long, why: String) {
         transition(d0, DlState.COMPLETED, why, f = { it.copy(currentSize = size, completedAt = System.currentTimeMillis(), speed = 0.0, etaSec = -1) })
         ev("${d0.displayName}: completed")
-        if (Store.sp.getBoolean("autopkg", true) && DownloadRepo.get(d0.id)?.finalPath?.lowercase()?.endsWith(".pkg") == false)
-            scope.launch { val m = renamePkg(d0.id); d("Auto .pkg: $m") }
+        scope.launch {
+            if (Store.sp.getBoolean("autopkg", true) && DownloadRepo.get(d0.id)?.finalPath?.lowercase()?.endsWith(".pkg") == false) d("Auto .pkg: " + renamePkg(d0.id))
+            if (Store.sp.getBoolean("autoinstall", false)) {
+                val f = DownloadRepo.get(d0.id)?.finalPath; val p = Ps4Repo.get(d0.ps4Id)
+                if (f != null && p != null && f.lowercase().endsWith(".pkg")) { d("Auto install: " + Ops.install(p, listOf(f))); ev("${d0.displayName}: install requested") }
+            }
+        }
     }
 
     /**
