@@ -64,3 +64,14 @@ Facts from its source (server/http_server.cpp, config.h, clients/baseclient.cpp)
 - BaseClient::Get returns success for ANY HTTP answer (error pages included) => finished .pkg files are checked for the PKG magic.
 - Downloads started elsewhere are adopted from the server list (toggle in Settings > Advanced); removed ones are not re-adopted.
 - Settings > Advanced: Stop ezRemote Server (all background downloads/installs; they resume after relaunch).
+
+## 3.2 — bg_download_history.json (/data/ezremote-client/)
+Source facts (ps4-ezremote-server config.cpp / http_server.cpp / main.cpp):
+- The file is read ONCE at server start-up. The running server works on memory and rewrites the file only when a download starts, finishes, or failed_attempts reaches 5 (bytes_transfered in the file is a snapshot, not live).
+- At start-up an entry resumes when state==1 (DOWNLOADING) or state==3 (FAILED) with failed_attempts<5, continuing from the .tmp size (bytes counter restarts from that size). state 3 + failed_attempts 5 is never retried.
+- GET /stop terminates the process (pthread_cancel, no save).
+App:
+- Reads the file (web range read, FTP fallback) for name, size, state, attempts: used when ezRemote Server is down and to adopt entries the app does not know (e.g. a download that stopped for good) as PAUSED.
+- PAUSE = stop ezRemote Server, then mark the entry state=3 / failed_attempts=5 (text-level edit, everything else byte-identical, verified by reading back). RESUME = same with failed_attempts=1; ezRemote must then be launched on the PS4 so the server reloads the file (the app cannot start it).
+- attempts>=5 seen in the file => state PAUSED ("ezRemote Server stopped retrying") instead of a generic failure.
+- New Paused tab, play/pause buttons on cards, dialogs that spell out the consequences.

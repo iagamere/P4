@@ -231,6 +231,7 @@ object DownloadMonitor {
             reach = if (any) Reach.REACHABLE else Reach.UNREACHABLE, lastOkAt = if (any) System.currentTimeMillis() else it.lastOkAt) }
         files?.let { updateUntracked(p, dir, it) }
         srvList?.let { adoptFromServer(p, it) }
+        if (PkgInspector.canRead(p)) try { BgHistory.read(p)?.let { adoptFromHistory(p, it) } } catch (e: Exception) { d("History file: ${e.javaClass.simpleName}: ${e.message}") }
         parts.joinToString("\n")
     }
 
@@ -523,6 +524,11 @@ object DownloadMonitor {
         }
         if (e != null && e.pending) { rt.failSince = 0; transition(d0, DlState.QUEUED, "Queued in ezRemote Server (it downloads one file at a time)."); return }
         if (e != null && e.failed) {
+            val disk = BgHistory.entry(BgHistory.cached(p), finalPath)           // the file is saved when failed_attempts reaches 5
+            if (disk != null && disk.stopped) {
+                transition(d0, DlState.PAUSED, "ezRemote Server stopped retrying after 5 failed attempts. You can resume the download.")
+                ev("${d0.displayName}: stopped after 5 failed attempts"); return
+            }
             if (rt.failSince == 0L) { rt.failSince = now; d("${d0.displayName}: ezRemote Server reports FAILED (it retries up to 5 times)") }
             if (now - rt.failSince < 240_000L) transition(d0, DlState.STALLED, "ezRemote Server reported a failure and retries automatically (up to 5 times).")
             else transition(d0, DlState.FAILED, "", "ezRemote Server gave up after repeated failures. The link may be expired or invalid, or the host refused the request.")
@@ -535,6 +541,11 @@ object DownloadMonitor {
             return
         }
         // no entry: the background server is unreachable, or it never registered this download
+        val disk = if (srv == null) BgHistory.entry(BgHistory.cached(p), finalPath) else null     // server down: the history file still knows it
+        if (disk != null) {
+            if (EzServer.sane(disk.size)) adoptServerSize(d0, disk.size)
+            if (disk.stopped) { transition(d0, DlState.PAUSED, "Paused: ezRemote Server is not running and this download is marked stopped."); return }
+        }
         when {
             tmpE != null -> sampleProgress(p, d0, rt, tmpE.size, now, s, true)
             finE != null -> finish(finE.size)
@@ -542,12 +553,74 @@ object DownloadMonitor {
                 transition(d0, DlState.NOT_STARTED, "ezRemote Server did not register this download.", "ezRemote Server did not register this download.")
                 d("${d0.displayName}: not in ezRemote Server's list and no file after ${waited / 1000}s; NOT resubmitting"); ev("${d0.displayName}: download has not started")
             }
-            srv == null && waited >= s.notStarted * 1000L -> {
+            srv == null && waited >= s.notStarted * 1000L && d0.startedAt == 0L && d0.currentSize == 0L -> {
                 transition(d0, DlState.NOT_STARTED, "ezRemote Server (port 6701) is not reachable and no file appeared.", "ezRemote Server (port 6701) is not reachable and no file appeared.")
                 ev("${d0.displayName}: download has not started")
             }
             else -> transition(d0, DlState.WAITING_FOR_START, "Waiting for ezRemote Server to register the download…")
         }
+    }
+
+    /** Entries of bg_download_history.json this app has no record of (e.g. a download that stopped for good): real name, size and state. */
+    private fun adoptFromHistory(p: Ps4, list: List<BgEntry>) {
+        if (!Store.sp.getBoolean("adoptsrv", true)) return
+        val ignored = Store.sp.getStringSet("ignoredsrv", emptySet()) ?: emptySet()
+        val known = DownloadRepo.all.value.filter { it.ps4Id == p.id }.mapNotNull { x -> x.fileName?.let { joinPath(norm(x.dest), it) } }.toSet()
+        var added = false
+        for (e in list.filter { it.state != 4 && it.dest.isNotBlank() && it.dest !in known && "${p.id}|${it.dest}" !in ignored }
+                     .groupBy { it.dest }.mapNotNull { (_, v) -> v.maxByOrNull { it.ts } }) {
+            val dir = e.dest.substringBeforeLast('/', "/").ifEmpty { "/" }; val name = e.dest.substringAfterLast('/'); val now = System.currentTimeMillis()
+            val tmp = try { PkgInspector.sizeOf(p, e.dest + ".tmp") } catch (x: Exception) { null }
+            val have = maxOf(tmp ?: 0L, e.bytes); val ok = EzServer.sane(e.size)
+            DownloadRepo.add(Download(UUID.randomUUID().toString(), p.id, 1, null, "", name, dir, tempPath = e.dest + ".tmp", currentSize = have,
+                expectedSize = e.size.takeIf { ok }, expectedSource = if (ok) "ezRemote Server" else "", startedAt = if (have > 0) now else 0L,
+                state = if (e.stopped) DlState.PAUSED else DlState.WAITING_FOR_START,
+                note = if (e.stopped) "ezRemote Server stopped retrying after 5 failed attempts. You can resume the download." else "Found in bg_download_history.json (not started from this app).",
+                createdAt = now, submittedAt = now, notificationId = Store.nextNotifId(), fileName = name))
+            d("Adopted from bg_download_history.json: ${e.dest} (state ${e.state}, attempts ${e.attempts})"); added = true
+        }
+        if (added) { ensureLoop(p.id); startSvc() }
+    }
+
+    /**
+     * PAUSE a download on the PS4. ezRemote Server only reads bg_download_history.json when it starts, so a running server cannot be told
+     * to stop one download: the server is stopped (it has no per-download control), then the entry is marked FAILED with failed_attempts=5
+     * (never retried). Other downloads resume by themselves the next time ezRemote is launched on the PS4.
+     */
+    suspend fun pauseDownload(id: String): String = withContext(Dispatchers.IO) {
+        val dl = DownloadRepo.get(id) ?: return@withContext tr("Download not found.", "التحميل غير موجود.")
+        val p = Ps4Repo.get(dl.ps4Id) ?: return@withContext tr("That PS4 profile no longer exists.", "ملف هذا الـPS4 لم يعد موجودًا.")
+        val name = dl.fileName ?: return@withContext tr("This download was not identified by its file path, so it cannot be paused.", "هذا التحميل غير معرَّف بمسار ملفه لذلك لا يمكن إيقافه مؤقتًا.")
+        val dest = joinPath(norm(dl.dest), name)
+        if (!PkgInspector.httpOn(p)) return@withContext tr("Pausing edits a file on the PS4 through the ezRemote web connection, which is off for this PS4.", "الإيقاف المؤقت يعدّل ملفًا على الـPS4 عبر اتصال ويب ezRemote وهو متوقف لهذا الجهاز.")
+        val running = try { EzServer.list(p, 3000); true } catch (e: Exception) { false }
+        if (running && !EzServer.stop(p)) return@withContext tr("ezRemote Server did not stop, so nothing was changed.", "لم يتوقف خادم ezRemote لذلك لم يتغير شيء.")
+        val r = BgHistory.mark(p, dest, 5)
+        if (!r.ok) return@withContext tr("Could not pause: ", "تعذّر الإيقاف المؤقت: ") + Tx.t(r.message)
+        rts.remove(id)
+        DownloadRepo.update(id) { it.copy(state = DlState.PAUSED, note = "Paused by you. ezRemote Server was stopped and this download is marked stopped in bg_download_history.json.", speed = 0.0, avgSpeed = 0.0, etaSec = -1) }
+        syncNotifs(); d("${dl.displayName}: paused (history entry marked failed_attempts=5)"); ev("${dl.displayName}: paused")
+        tr("Paused. ezRemote Server was stopped; launch ezRemote on the PS4 to continue your other downloads. This one stays paused until you resume it.",
+           "تم الإيقاف المؤقت. أُوقف خادم ezRemote؛ شغّل ezRemote على الـPS4 لمتابعة تحميلاتك الأخرى. هذا التحميل يبقى متوقفًا حتى تستأنفه.")
+    }
+
+    /** RESUME: failed_attempts is set back to 1 (state FAILED) so the server resumes it from the .tmp size when it is started again. */
+    suspend fun resumeOnPs4(id: String): String = withContext(Dispatchers.IO) {
+        val dl = DownloadRepo.get(id) ?: return@withContext tr("Download not found.", "التحميل غير موجود.")
+        val p = Ps4Repo.get(dl.ps4Id) ?: return@withContext tr("That PS4 profile no longer exists.", "ملف هذا الـPS4 لم يعد موجودًا.")
+        val name = dl.fileName ?: return@withContext tr("This download was not identified by its file path.", "هذا التحميل غير معرَّف بمسار ملفه.")
+        val dest = joinPath(norm(dl.dest), name)
+        val running = try { EzServer.list(p, 3000); true } catch (e: Exception) { false }
+        if (running && !EzServer.stop(p)) return@withContext tr("ezRemote Server did not stop, so nothing was changed.", "لم يتوقف خادم ezRemote لذلك لم يتغير شيء.")
+        val r = BgHistory.mark(p, dest, 1)
+        if (!r.ok) return@withContext tr("Could not resume: ", "تعذّر الاستئناف: ") + Tx.t(r.message)
+        rts.remove(id)
+        DownloadRepo.update(id) { it.copy(state = DlState.WAITING_FOR_START, note = "Waiting for ezRemote Server… launch ezRemote on the PS4 so it reloads the download list.", errorMessage = null, terminalNotified = false, speed = 0.0, etaSec = -1,
+            startedAt = if (it.currentSize > 0 && it.startedAt == 0L) System.currentTimeMillis() else it.startedAt) }
+        ensureLoop(p.id); startSvc()
+        d("${dl.displayName}: resume requested (history entry set to failed_attempts=1)"); ev("${dl.displayName}: resume requested")
+        tr("Resume prepared. Launch ezRemote on the PS4 now so ezRemote Server reloads the list; the download continues from the partial file and this app will pick it up.",
+           "تم تجهيز الاستئناف. شغّل ezRemote على الـPS4 الآن ليعيد خادم ezRemote تحميل القائمة؛ سيكمل التحميل من الملف الجزئي وسيلتقطه التطبيق.")
     }
 
     /** Active downloads that ezRemote Server is running but this app did not start (ezRemote Client UI, another phone): exact path, real state. */
@@ -706,7 +779,7 @@ object DownloadMonitor {
         for (x in all) {
             when {
                 x.state.active && x.state != DlState.SUBMITTING -> Notifier.progress(x)
-                x.state == DlState.STOPPED -> Notifier.cancel(x.notificationId)
+                x.state == DlState.STOPPED || x.state == DlState.PAUSED -> Notifier.cancel(x.notificationId)
                 !x.terminalNotified && (x.state == DlState.COMPLETED || x.state == DlState.FAILED || x.state == DlState.NOT_STARTED) -> {
                     DownloadRepo.update(x.id) { it.copy(terminalNotified = true) }       // persist BEFORE posting: never twice
                     Notifier.result(x)

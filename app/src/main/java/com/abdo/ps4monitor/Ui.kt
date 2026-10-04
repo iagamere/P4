@@ -68,6 +68,7 @@ fun stateIcon(s: DlState) = when (s) {
     DlState.FAILED, DlState.CONNECTION_LOST -> R.drawable.ic_error
     DlState.NOT_STARTED, DlState.STALLED -> R.drawable.ic_warning
     DlState.STOPPED -> R.drawable.ic_stop
+    DlState.PAUSED -> R.drawable.ic_pause
     DlState.VERIFYING -> R.drawable.ic_search
     DlState.DOWNLOADING -> R.drawable.ic_download
     else -> R.drawable.ic_schedule
@@ -77,6 +78,7 @@ fun stateIcon(s: DlState) = when (s) {
     DlState.FAILED, DlState.NOT_STARTED -> c.errorContainer to c.onErrorContainer
     DlState.STALLED, DlState.CONNECTION_LOST -> c.secondaryContainer to c.onSecondaryContainer
     DlState.STOPPED -> c.surfaceContainerHighest to c.onSurfaceVariant
+    DlState.PAUSED -> c.secondaryContainer to c.onSecondaryContainer
     else -> c.primaryContainer to c.onPrimaryContainer } }
 
 fun resultText(r: SubmitResult) = Tx.t(when (r) {
@@ -89,7 +91,7 @@ fun resultText(r: SubmitResult) = Tx.t(when (r) {
 
 /** Real state only: no percentage or ETA unless the total size is actually known. */
 @Composable fun DownloadCard(d: Download, onOpen: () -> Unit, onLong: (() -> Unit)? = null, selected: Boolean? = null,
-                             onStop: (() -> Unit)? = null, onDelete: (() -> Unit)? = null) {
+                             onStop: (() -> Unit)? = null, onDelete: (() -> Unit)? = null, onPause: (() -> Unit)? = null, onResume: (() -> Unit)? = null) {
     val ctx = LocalContext.current; val scope = rememberCoroutineScope()
     val ps4 = Ps4Repo.get(d.ps4Id)
     val (bg, fg) = stateColors(d.state)
@@ -127,8 +129,10 @@ fun resultText(r: SubmitResult) = Tx.t(when (r) {
                 }
             }
             if (selected == null) {
-                if (d.state.active && onStop != null) IconButton(onClick = onStop) { Ico(R.drawable.ic_stop, 22.dp, MaterialTheme.colorScheme.onSurfaceVariant) }
-                else if (!d.state.active && onDelete != null) IconButton(onClick = onDelete) { Ico(R.drawable.ic_delete, 22.dp, MaterialTheme.colorScheme.onSurfaceVariant) }
+                if (d.state == DlState.PAUSED && onResume != null) IconButton(onClick = onResume) { Ico(R.drawable.ic_play, 24.dp, MaterialTheme.colorScheme.primary) }
+                else if (d.state.active && d.fileName != null && onPause != null) IconButton(onClick = onPause) { Ico(R.drawable.ic_pause, 22.dp, MaterialTheme.colorScheme.onSurfaceVariant) }
+                else if (d.state.active && onStop != null) IconButton(onClick = onStop) { Ico(R.drawable.ic_stop, 22.dp, MaterialTheme.colorScheme.onSurfaceVariant) }
+                else if (!d.state.active && d.state != DlState.PAUSED && onDelete != null) IconButton(onClick = onDelete) { Ico(R.drawable.ic_delete, 22.dp, MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
     }

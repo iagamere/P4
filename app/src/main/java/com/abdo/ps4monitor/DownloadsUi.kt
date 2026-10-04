@@ -52,6 +52,29 @@ import kotlinx.coroutines.launch
         }) { Lbl(tr("Delete", "حذف"), color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton(enabled = !busy, onClick = close) { Lbl(tr("Cancel", "إلغاء")) } })
 }
+@Composable fun ConfirmPause(id: String, close: () -> Unit) {
+    val p = Ps4Repo.get(DownloadRepo.get(id)?.ps4Id)
+    AlertDialog(onDismissRequest = close, title = { Text(tr("Pause this download?", "إيقاف هذا التحميل مؤقتًا؟")) },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(tr("ezRemote Server only reads bg_download_history.json when it starts, so to pause it has to be stopped. That stops ALL background downloads and installs on ${p?.name ?: "the PS4"}.",
+                "خادم ezRemote لا يقرأ bg_download_history.json إلا عند إقلاعه، لذلك يجب إيقافه ليتوقف التحميل. هذا يوقف كل التحميلات والتثبيتات في الخلفية على ${p?.name ?: "الـPS4"}."))
+            Dim(tr("This download is then marked as stopped (failed_attempts = 5) and stays paused until you resume it. Your other downloads continue when you launch ezRemote on the PS4 again; the partial file is kept.",
+                "ثم يُعلَّم هذا التحميل كمتوقف (failed_attempts = 5) ويبقى متوقفًا حتى تستأنفه. تستمر تحميلاتك الأخرى عند تشغيل ezRemote مجددًا على الـPS4؛ والملف الجزئي يبقى."))
+        } },
+        confirmButton = { TextButton(onClick = { Ops.launch(tr("Pausing…", "إيقاف مؤقت…")) { DownloadMonitor.pauseDownload(id) }; close() }) { Lbl(tr("Pause", "إيقاف مؤقت")) } },
+        dismissButton = { TextButton(onClick = close) { Lbl(tr("Cancel", "إلغاء")) } })
+}
+
+@Composable fun ConfirmResume(id: String, close: () -> Unit) {
+    AlertDialog(onDismissRequest = close, title = { Text(tr("Resume this download?", "استئناف هذا التحميل؟")) },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(tr("failed_attempts is set back to 1 in bg_download_history.json (ezRemote Server is stopped first if it is running).", "يُعاد failed_attempts إلى 1 في bg_download_history.json (يُوقف خادم ezRemote أولًا إن كان يعمل)."))
+            Dim(tr("Then launch ezRemote on the PS4 so the server reloads the list. The download continues from the partial file and this app picks it up automatically.", "ثم شغّل ezRemote على الـPS4 ليعيد الخادم تحميل القائمة. يكمل التحميل من الملف الجزئي ويلتقطه التطبيق تلقائيًا."))
+        } },
+        confirmButton = { TextButton(onClick = { Ops.launch(tr("Preparing resume…", "تجهيز الاستئناف…")) { DownloadMonitor.resumeOnPs4(id) }; close() }) { Lbl(tr("Resume", "استئناف")) } },
+        dismissButton = { TextButton(onClick = close) { Lbl(tr("Cancel", "إلغاء")) } })
+}
+
 private fun stopToast(ctx: android.content.Context) = Toast.makeText(ctx, tr("Monitoring stopped. The PS4 may still be downloading.", "أُوقفت المراقبة. قد يستمر الـPS4 في التحميل."), Toast.LENGTH_LONG).show()
 
 @Composable fun DownloadsScreen(nav: NavController) {
@@ -60,10 +83,13 @@ private fun stopToast(ctx: android.content.Context) = Toast.makeText(ctx, tr("Mo
     var tab by remember { mutableIntStateOf(0) }
     var sel by remember { mutableStateOf(setOf<String>()) }
     var confirm by remember { mutableStateOf<Pair<List<String>, Boolean>?>(null) }
+    var confirmPause by remember { mutableStateOf<String?>(null) }
+    var confirmResume by remember { mutableStateOf<String?>(null) }
     val active = all.filter { it.state.active }
+    val paused = all.filter { it.state == DlState.PAUSED }
     val done = all.filter { it.state == DlState.COMPLETED }
     val failed = all.filter { it.state == DlState.FAILED || it.state == DlState.NOT_STARTED || it.state == DlState.STOPPED }
-    val shown = when (tab) { 0 -> active; 1 -> done; else -> failed }.sortedByDescending { it.createdAt }
+    val shown = when (tab) { 0 -> active; 1 -> paused; 2 -> done; else -> failed }.sortedByDescending { it.createdAt }
     val selIds = sel.filter { id -> shown.any { it.id == id } }       // forget anything that vanished or changed tab
     val selecting = selIds.isNotEmpty()
     BackHandler(enabled = selecting) { sel = emptySet() }
@@ -84,7 +110,7 @@ private fun stopToast(ctx: android.content.Context) = Toast.makeText(ctx, tr("Mo
             }
         }
         TabRow(selectedTabIndex = tab, containerColor = Color.Transparent, divider = {}) {
-            listOf(tr("Active", "نشطة") to active.size, tr("Completed", "مكتملة") to done.size, tr("Failed", "فاشلة") to failed.size).forEachIndexed { i, (t, n) ->
+            listOf(tr("Active", "نشطة") to active.size, tr("Paused", "متوقفة") to paused.size, tr("Completed", "مكتملة") to done.size, tr("Failed", "فاشلة") to failed.size).forEachIndexed { i, (t, n) ->
                 Tab(tab == i, { tab = i; sel = emptySet() }, text = { Lbl("$t $n") })
             }
         }
@@ -94,10 +120,13 @@ private fun stopToast(ctx: android.content.Context) = Toast.makeText(ctx, tr("Mo
                 DownloadCard(d,
                     onOpen = { if (selecting) sel = if (d.id in sel) sel - d.id else sel + d.id else nav.navigate("downloads/${d.id}") },
                     onLong = { sel = sel + d.id }, selected = if (selecting) d.id in selIds else null,
-                    onStop = { DownloadMonitor.stop(d.id); stopToast(ctx) }, onDelete = { confirm = listOf(d.id) to false })
+                    onStop = { DownloadMonitor.stop(d.id); stopToast(ctx) }, onDelete = { confirm = listOf(d.id) to false },
+                    onPause = { confirmPause = d.id }, onResume = { confirmResume = d.id })
             }
         }
     }
+    confirmPause?.let { ConfirmPause(it) { confirmPause = null } }
+    confirmResume?.let { ConfirmResume(it) { confirmResume = null } }
     confirm?.let { (ids, also) -> ConfirmDelete(ids, onDone = { sel = emptySet() }, close = { confirm = null }, defaultAlsoPs4 = also) }
 }
 
@@ -108,6 +137,8 @@ private fun stopToast(ctx: android.content.Context) = Toast.makeText(ctx, tr("Mo
     val ctx = LocalContext.current; val scope = rememberCoroutineScope()
     var confirm by remember { mutableStateOf<Pair<List<String>, Boolean>?>(null) }
     var confirmInstall by remember { mutableStateOf(false) }
+    var confirmPause by remember { mutableStateOf(false) }
+    var confirmResume by remember { mutableStateOf(false) }
     Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         BackHeader(tr("Download", "التحميل"), nav)
         if (d == null) { Text(tr("This download was removed.", "تم حذف هذا التحميل.")); return@Column }
@@ -172,6 +203,8 @@ private fun stopToast(ctx: android.content.Context) = Toast.makeText(ctx, tr("Mo
             Dim(tr("Sent: ", "أُرسل: ") + Fmt.dt(d.submittedAt) + "   " + tr("Started: ", "بدأ: ") + Fmt.dt(d.startedAt) + "   " + tr("Finished: ", "انتهى: ") + Fmt.dt(d.completedAt))
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (d.state.active && d.fileName != null) FilledTonalButton(onClick = { confirmPause = true }) { Ico(R.drawable.ic_pause, 18.dp); Spacer(Modifier.width(6.dp)); Lbl(tr("Pause on PS4", "إيقاف مؤقت على الـPS4")) }
+            if (d.state == DlState.PAUSED) Button(onClick = { confirmResume = true }) { Ico(R.drawable.ic_play, 18.dp); Spacer(Modifier.width(6.dp)); Lbl(tr("Resume", "استئناف")) }
             if (d.state.active) FilledTonalButton(onClick = { DownloadMonitor.stop(d.id); stopToast(ctx) }) { Ico(R.drawable.ic_stop, 18.dp); Spacer(Modifier.width(6.dp)); Lbl(tr("Stop", "إيقاف")) }
             if (!d.superseded && d.sourceUrl.isNotBlank() && d.state in setOf(DlState.NOT_STARTED, DlState.FAILED, DlState.STOPPED))
                 Button(onClick = { scope.launch { Toast.makeText(ctx, resultText(DownloadMonitor.retry(d.id)), Toast.LENGTH_LONG).show() } }) { Ico(R.drawable.ic_refresh, 18.dp); Spacer(Modifier.width(6.dp)); Lbl(tr("Retry", "إعادة المحاولة")) }
@@ -189,6 +222,8 @@ private fun stopToast(ctx: android.content.Context) = Toast.makeText(ctx, tr("Mo
         if (d.state.active) Dim(tr("“Stop” only stops this app from watching; it does not cancel the download on the PS4 (ezRemote has no confirmed cancel API). Retry sends a NEW request and is never automatic.",
             "«إيقاف» يوقف مراقبة التطبيق فقط ولا يلغي التحميل على الـPS4 (لا يوجد API مؤكد للإلغاء في ezRemote). إعادة المحاولة ترسل طلبًا جديدًا ولا تتم تلقائيًا."))
     }
+    if (confirmPause) ConfirmPause(id) { confirmPause = false }
+    if (confirmResume) ConfirmResume(id) { confirmResume = false }
     if (confirmInstall) { val p = Ps4Repo.get(d?.ps4Id); val f = d?.finalPath; if (p != null && f != null) ConfirmInstall(p, listOf(f), close = { confirmInstall = false }) }
     confirm?.let { (ids, also) -> ConfirmDelete(ids, onDone = { nav.popBackStack() }, close = { confirm = null }, defaultAlsoPs4 = also) }
 }

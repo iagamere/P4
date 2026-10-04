@@ -34,6 +34,7 @@ enum class DlState(private val en: String, private val ar: String, val active: B
     STALLED("Stalled", "متعثّر", true),
     CONNECTION_LOST("Connection lost", "انقطع الاتصال", true),
     VERIFYING("Verifying", "جارٍ التحقق", true),
+    PAUSED("Paused", "متوقف مؤقتًا", false),
     COMPLETED("Completed", "اكتمل", false),
     FAILED("Failed", "فشل", false),
     STOPPED("Monitoring stopped", "أُوقفت المراقبة", false),
