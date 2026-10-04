@@ -40,7 +40,7 @@ object DownloadMonitor {
         var peak = d.peakSpeed; var ema = 0.0; var speeds = listOf<Float>()
         var lastGrow = 0L; var firstT = 0L; var firstS = 0L; var lastSize = d.currentSize
         var grew = d.startedAt > 0; var unchanged = 0; var unobserved = 0L
-        var absent = 0; var absentSince = 0L; var ambLogged = false
+        var absent = 0; var absentSince = 0L; var ambLogged = false; var failSince = 0L; var magicOk = false
         var finalSize = -1L; var finalStable = 0; var finalSince = 0L; var finalAbsent = 0; var expStableSince = 0L
     }
 
@@ -100,7 +100,15 @@ object DownloadMonitor {
             ?: Uri.parse(u).host ?: "download"
     }.getOrDefault("download")
 
-    suspend fun submit(ps4: Ps4, url: String, destIn: String, manualSize: Long = 0L, retryOf: Download? = null, fileName: String? = null, sendName: Boolean = false): SubmitResult =
+    private fun uniqueName(name: String, taken: Set<String>): String {
+        fun busy(n: String) = n in taken || "$n.tmp" in taken
+        if (!busy(name)) return name
+        val stem = name.substringBeforeLast('.', name).replace(Regex(" \\(\\d+\\)$"), ""); val ext = if ('.' in name) "." + name.substringAfterLast('.') else ""
+        var i = 2; while (busy("$stem ($i)$ext")) i++
+        return "$stem ($i)$ext"
+    }
+
+    suspend fun submit(ps4: Ps4, url: String, destIn: String, manualSize: Long = 0L, retryOf: Download? = null, fileName: String? = null, @Suppress("UNUSED_PARAMETER") sendName: Boolean = true): SubmitResult =
         withContext(Dispatchers.IO) {
             val u = url.trim()
             if (!Regex("^https?://\\S+$").matches(u)) return@withContext SubmitResult.Invalid("That is not a valid http(s) link.")
@@ -109,18 +117,22 @@ object DownloadMonitor {
             if (retryOf == null) DownloadRepo.all.value.firstOrNull {
                 it.ps4Id == ps4.id && it.sourceUrl == u && norm(it.dest) == dest && it.state.active && !it.superseded
             }?.let { return@withContext SubmitResult.Duplicate("This link is already being downloaded to ${ps4.name}.") }
-            val fname = fileName?.let { Names.clean(it) }?.takeIf { it.isNotEmpty() }
-            val destSend = if (sendName && fname != null) dest.trimEnd('/') + "/" + fname else dest      // full path only when the user kept "send name" on
             val s = Store.settings()
             val now = System.currentTimeMillis()
             val base = fetchList(ps4, dest, s)?.associate { it.name to it.size }       // files that exist BEFORE submission
+            // ezRemote Server takes "dest" as the FINAL FILE PATH and writes "<dest>.tmp". Sending only a folder would write /data/pkg.tmp
+            // next to the folder. So a unique file name is always chosen here, which also makes the path an exact identity.
+            val srvNow = if (PkgInspector.httpOn(ps4)) try { EzServer.list(ps4, 3000) } catch (e: Exception) { null } else null
+            val taken = (base?.keys ?: emptySet()) + (srvNow?.filter { it.path.substringBeforeLast('/', "/").ifEmpty { "/" } == dest }?.map { it.path.substringAfterLast('/') } ?: emptyList())
+            val fname = uniqueName(Names.clean(fileName ?: Names.fromUrl(u)).ifBlank { "download.pkg" }, taken)
+            val destSend = joinPath(dest, fname)
             if (base == null) d("Could not snapshot $dest before submitting; file matching will need name evidence")
             val id = UUID.randomUUID().toString()
             val keep = retryOf?.takeIf { it.expectedSource.startsWith("entered") }
-            DownloadRepo.add(Download(id, ps4.id, (retryOf?.attempt ?: 0) + 1, retryOf?.id, u, fname ?: nameFromUrl(u), dest,
+            DownloadRepo.add(Download(id, ps4.id, (retryOf?.attempt ?: 0) + 1, retryOf?.id, u, fname, dest,
                 expectedSize = manualSize.takeIf { it > 0 } ?: keep?.expectedSize,
                 expectedSource = if (manualSize > 0) "entered by you" else if (keep != null) "entered by you" else "",
-                state = DlState.SUBMITTING, createdAt = now, submittedAt = now, notificationId = Store.nextNotifId(), baseline = base, fileName = fname))
+                state = DlState.SUBMITTING, createdAt = now, submittedAt = now, notificationId = Store.nextNotifId(), baseline = base, fileName = fname, tempPath = "$destSend.tmp"))
             d("Download request submitted (${ps4.name}, dest=$destSend)")
             when (val r = EzRemote.submit(ps4, u, destSend)) {
                 is EzRemote.Submit.Rejected -> { DownloadRepo.remove(id); d("State: rejected — ${r.message}"); SubmitResult.Rejected(r.message) }
@@ -169,7 +181,9 @@ object DownloadMonitor {
         DownloadRepo.update(id) { it.copy(state = DlState.STOPPED, note = "Monitoring stopped by you. The PS4 download itself is not cancelled.", speed = 0.0, etaSec = -1) }
         d("${x.displayName}: monitoring stopped by user"); syncNotifs()
     }
-    fun remove(id: String) { Notifier.cancel(DownloadRepo.get(id)?.notificationId ?: return); rts.remove(id); pps.remove(id); PkgStore.delete("d:$id"); DownloadRepo.remove(id) }
+    fun remove(id: String) {
+        DownloadRepo.get(id)?.let { x -> x.fileName?.let { n -> val set = (Store.sp.getStringSet("ignoredsrv", emptySet()) ?: emptySet()).toMutableSet(); set += "${x.ps4Id}|${joinPath(norm(x.dest), n)}"; Store.sp.edit().putStringSet("ignoredsrv", set).apply() } }
+        Notifier.cancel(DownloadRepo.get(id)?.notificationId ?: return); rts.remove(id); pps.remove(id); PkgStore.delete("d:$id"); DownloadRepo.remove(id) }
     fun setExpected(id: String, bytes: Long) {
         DownloadRepo.update(id) { it.copy(expectedSize = bytes, expectedSource = "entered by you") }; d("Expected size entered by user: ${Fmt.bytes(bytes)}")
     }
@@ -205,12 +219,18 @@ object DownloadMonitor {
             catch (e: SoftError) { ftpOk = true; parts += "FTP: connected, but ${e.message}" }
             catch (e: Exception) { d("Probe FTP: ${e.javaClass.simpleName}: ${e.message}"); parts += "FTP: " + Ftp.friendly(e) }
         }
+        var srvList: List<SrvEntry>? = null
+        if (p.mode != MonitorMode.FTP_ONLY) {
+            try { srvList = EzServer.list(p, 4000); parts += "ezRemote Server: OK" }
+            catch (e: Exception) { d("Probe ezRemote Server: ${e.javaClass.simpleName}: ${e.message}"); parts += "ezRemote Server: not reachable (is it running? port 6701)" }
+        }
         val any = httpOk || ftpOk
-        upStatus(p.id) { it.copy(
+        upStatus(p.id) { it.copy(bg = if (p.mode == MonitorMode.FTP_ONLY) Link.DISABLED else if (srvList != null) Link.AVAILABLE else Link.UNAVAILABLE,
             http = if (p.mode == MonitorMode.FTP_ONLY) Link.DISABLED else if (httpOk) Link.AVAILABLE else Link.UNAVAILABLE,
             ftp = if (p.mode == MonitorMode.HTTP_ONLY || p.ftpPort <= 0) Link.DISABLED else if (ftpOk) Link.AVAILABLE else Link.UNAVAILABLE,
             reach = if (any) Reach.REACHABLE else Reach.UNREACHABLE, lastOkAt = if (any) System.currentTimeMillis() else it.lastOkAt) }
         files?.let { updateUntracked(p, dir, it) }
+        srvList?.let { adoptFromServer(p, it) }
         parts.joinToString("\n")
     }
 
@@ -253,21 +273,27 @@ object DownloadMonitor {
             val ds = watched(ps4Id)
             if (ds.isEmpty()) return
             val s = Store.settings()
+            val srv: List<SrvEntry>? = if (p.mode != MonitorMode.FTP_ONLY) fetchSrv(p) else null
             val listings = HashMap<String, List<FsEntry>>(); var failed = false
             for (dir in ds.map { norm(it.dest) }.distinct()) {
                 val l = fetchList(p, dir, s); if (l == null) { failed = true; break }; listings[dir] = l
             }
             var wait = s.interval * 1000L
-            if (failed) { onFailure(p, st, s); wait = maxOf(wait, minOf(s.interval * 1000L shl minOf(st.failStreak, 4), 30_000L)) }
+            val onlySrv = failed && srv != null && ds.all { it.fileName != null }      // the background server alone is enough for exact-path downloads
+            if (failed && !onlySrv) { onFailure(p, st, s); wait = maxOf(wait, minOf(s.interval * 1000L shl minOf(st.failStreak, 4), 30_000L)) }
             else {
                 onSuccess(p, st)
-                try { process(p, listings, s) } catch (e: CancellationException) { throw e } catch (e: Exception) { d("Process error: ${e.javaClass.simpleName}: ${e.message}") }
+                try { process(p, listings, s, srv, !failed) } catch (e: CancellationException) { throw e } catch (e: Exception) { d("Process error: ${e.javaClass.simpleName}: ${e.message}") }
             }
             if (watched(ps4Id).all { it.state == DlState.NOT_STARTED }) wait = maxOf(wait, 10_000L)
             syncNotifs()
             withTimeoutOrNull(wait) { wake.first() }          // a network callback can wake us early
         }
     }
+
+    private fun fetchSrv(p: Ps4): List<SrvEntry>? = try {
+        val l = EzServer.list(p, 3000); upStatus(p.id) { it.copy(bg = Link.AVAILABLE) }; l
+    } catch (e: Exception) { upStatus(p.id) { it.copy(bg = Link.UNAVAILABLE) }; d("ezRemote Server (port 6701) not reachable: ${e.javaClass.simpleName}: ${e.message}"); null }
 
     private fun onSuccess(p: Ps4, st: P) {
         val now = System.currentTimeMillis()
@@ -305,14 +331,19 @@ object DownloadMonitor {
     }
 
     // ---------------- association + state machine ----------------
-    private fun process(p: Ps4, listings: Map<String, List<FsEntry>>, s: Settings) {
+    private fun process(p: Ps4, listings: Map<String, List<FsEntry>>, s: Settings, srv: List<SrvEntry>?, fsOk: Boolean) {
         val now = System.currentTimeMillis()
         for ((dir, entries) in listings) {
             val dls = watched(p.id).filter { norm(it.dest) == dir }
             associate(p, dir, entries, dls)
             updateUntracked(p, dir, entries)
-            for (d0 in dls) { val x = DownloadRepo.get(d0.id) ?: continue; if (isWatch(x, now)) step(p, x, entries, s, now) }
+            for (d0 in dls) { val x = DownloadRepo.get(d0.id) ?: continue; if (x.fileName == null && isWatch(x, now)) step(p, x, entries, s, now) }
         }
+        for (dl in watched(p.id).filter { it.fileName != null }) {          // exact-path downloads: ezRemote Server state is the primary evidence
+            val x = DownloadRepo.get(dl.id) ?: continue
+            if (isWatch(x, now)) stepServer(p, x, if (fsOk) listings[norm(x.dest)] else null, srv, s, now)
+        }
+        if (srv != null) adoptFromServer(p, srv)
     }
 
     private fun isTmp(n: String) = n.endsWith(".tmp", true)
@@ -413,6 +444,10 @@ object DownloadMonitor {
         rt.absent = 0
         val size = e.size
         maybeProbe(p, d0, d0.tempPath, size, now)
+        sampleProgress(p, d0, rt, size, now, s, true)
+    }
+
+    private fun sampleProgress(p: Ps4, d0: Download, rt: Rt, size: Long, now: Long, s: Settings, allowAtExp: Boolean) {
         if (rt.firstT == 0L) { rt.firstT = now; rt.firstS = size; rt.lastGrow = now }
         if (rt.prevS >= 0 && size < rt.prevS) { rt.win.clear(); rt.prevS = -1; rt.lastGrow = now; d("${d0.displayName}: file size decreased; treating as restarted") }
         var cur = 0.0; var firstGrowth = false
@@ -450,9 +485,86 @@ object DownloadMonitor {
         DownloadRepo.update(old.id) { it.copy(state = st, note = note, currentSize = size, speed = rt.ema, avgSpeed = avg, peakSpeed = rt.peak, etaSec = eta,
             speeds = rt.speeds, lastSeenAt = now, startedAt = if (firstGrowth && it.startedAt == 0L) now else it.startedAt, errorMessage = null) }
         rt.prevS = size; rt.prevT = now
-        if (atExp && rt.expStableSince > 0 && now - rt.expStableSince >= 120_000) {
+        if (allowAtExp && atExp && rt.expStableSince > 0 && now - rt.expStableSince >= 120_000) {
             complete(old, size, "Reached the expected size and stayed stable (the PS4 kept the temporary file name).")
         }
+    }
+
+    /** Download whose final file path was chosen by this app: ezRemote Server (port 6701) tells the real state, bytes and size. */
+    private fun adoptServerSize(d0: Download, size: Long) {
+        val x = DownloadRepo.get(d0.id) ?: return
+        if (x.expectedSource.startsWith("entered") || x.expectedSource.contains("confirmed") || x.expectedSource.contains("agrees") || x.expectedSize == size) return
+        DownloadRepo.update(d0.id) { it.copy(expectedSize = size, expectedSource = "ezRemote Server") }
+        d("${d0.displayName}: expected size ${Fmt.bytes(size)} (from ezRemote Server)")
+    }
+
+    private fun stepServer(p: Ps4, d0: Download, entries: List<FsEntry>?, srv: List<SrvEntry>?, s: Settings, now: Long) {
+        val rt = rts.getOrPut(d0.id) { Rt(d0) }
+        val dir = norm(d0.dest); val name = d0.fileName ?: return
+        val finalPath = joinPath(dir, name); val tmpName = "$name.tmp"
+        val byName = entries?.associateBy { it.name }
+        val tmpE = byName?.get(tmpName); val finE = byName?.get(name)
+        val e = srv?.let { EzServer.newest(it, finalPath) }
+        val waited = now - d0.submittedAt - rt.unobserved
+        if (e != null && EzServer.sane(e.size) && e.size >= e.bytes - (1L shl 20)) adoptServerSize(d0, e.size)
+        fun finish(size: Long) {
+            rt.finalSize = -1; rt.finalStable = 0; rt.finalAbsent = 0
+            transition(d0, DlState.VERIFYING, "Checking downloaded file…", f = { it.copy(finalPath = finalPath, currentSize = size) })
+        }
+        if (e != null && e.done) {
+            if (finE != null) finish(finE.size)
+            else if (entries != null) {
+                rt.absent++
+                if (tmpE != null && rt.absent >= 2) transition(d0, DlState.FAILED, "", "ezRemote Server finished but the temporary file could not be renamed (a folder with the same name may exist).")
+                else if (tmpE == null && rt.absent >= 3) transition(d0, DlState.FAILED, "", "ezRemote Server reported success but the file is missing (it may have been deleted).")
+                else transition(d0, DlState.VERIFYING, "Looking for the finished file…")
+            } else transition(d0, DlState.VERIFYING, "Looking for the finished file…")
+            return
+        }
+        if (e != null && e.pending) { rt.failSince = 0; transition(d0, DlState.QUEUED, "Queued in ezRemote Server (it downloads one file at a time)."); return }
+        if (e != null && e.failed) {
+            if (rt.failSince == 0L) { rt.failSince = now; d("${d0.displayName}: ezRemote Server reports FAILED (it retries up to 5 times)") }
+            if (now - rt.failSince < 240_000L) transition(d0, DlState.STALLED, "ezRemote Server reported a failure and retries automatically (up to 5 times).")
+            else transition(d0, DlState.FAILED, "", "ezRemote Server gave up after repeated failures. The link may be expired or invalid, or the host refused the request.")
+            return
+        }
+        if (e != null && e.active) {
+            rt.failSince = 0
+            if (tmpE != null) maybeProbe(p, d0, joinPath(dir, tmpName), tmpE.size, now)
+            sampleProgress(p, d0, rt, maxOf(e.bytes, tmpE?.size ?: 0L), now, s, false)
+            return
+        }
+        // no entry: the background server is unreachable, or it never registered this download
+        when {
+            tmpE != null -> sampleProgress(p, d0, rt, tmpE.size, now, s, true)
+            finE != null -> finish(finE.size)
+            srv != null && waited >= 20_000L -> {
+                transition(d0, DlState.NOT_STARTED, "ezRemote Server did not register this download.", "ezRemote Server did not register this download.")
+                d("${d0.displayName}: not in ezRemote Server's list and no file after ${waited / 1000}s; NOT resubmitting"); ev("${d0.displayName}: download has not started")
+            }
+            srv == null && waited >= s.notStarted * 1000L -> {
+                transition(d0, DlState.NOT_STARTED, "ezRemote Server (port 6701) is not reachable and no file appeared.", "ezRemote Server (port 6701) is not reachable and no file appeared.")
+                ev("${d0.displayName}: download has not started")
+            }
+            else -> transition(d0, DlState.WAITING_FOR_START, "Waiting for ezRemote Server to register the download…")
+        }
+    }
+
+    /** Active downloads that ezRemote Server is running but this app did not start (ezRemote Client UI, another phone): exact path, real state. */
+    private fun adoptFromServer(p: Ps4, srv: List<SrvEntry>) {
+        if (!Store.sp.getBoolean("adoptsrv", true)) return
+        val ignored = Store.sp.getStringSet("ignoredsrv", emptySet()) ?: emptySet()
+        val known = DownloadRepo.all.value.filter { it.ps4Id == p.id }.mapNotNull { x -> x.fileName?.let { joinPath(norm(x.dest), it) } }.toSet()
+        var added = false
+        for (e in srv.filter { (it.active || it.pending) && it.path !in known && "${p.id}|${it.path}" !in ignored }) {
+            val dir = e.path.substringBeforeLast('/', "/").ifEmpty { "/" }; val name = e.path.substringAfterLast('/'); val now = System.currentTimeMillis()
+            val ok = EzServer.sane(e.size)
+            DownloadRepo.add(Download(UUID.randomUUID().toString(), p.id, 1, null, "", name, dir, tempPath = e.path + ".tmp", currentSize = e.bytes,
+                expectedSize = e.size.takeIf { ok }, expectedSource = if (ok) "ezRemote Server" else "", state = if (e.pending) DlState.QUEUED else DlState.STARTING,
+                note = "Found in ezRemote Server (not started from this app).", createdAt = now, submittedAt = now, notificationId = Store.nextNotifId(), fileName = name))
+            d("Adopted from ezRemote Server: ${e.path}"); ev("Now monitoring $name"); added = true
+        }
+        if (added) { ensureLoop(p.id); startSvc() }
     }
 
     private fun verifyFinal(p: Ps4, d0: Download, rt: Rt, byName: Map<String, FsEntry>, s: Settings, now: Long) {
@@ -468,9 +580,16 @@ object DownloadMonitor {
         val stable = rt.finalStable >= 3 && now - rt.finalSince >= maxOf(10_000L, 3000L * s.interval)
         DownloadRepo.update(d0.id) { it.copy(currentSize = e.size, lastSeenAt = now) }
         if (!stable) { transition(d0, DlState.VERIFYING, "Checking downloaded file…"); return }
+        if (d0.finalPath!!.lowercase().endsWith(".pkg") && !rt.magicOk) {
+            // ezRemote Server stores whatever the host answered (an HTML error page included) and calls it a success, so check the PKG magic.
+            val ok = try { PkgInspector.isPkg(p, d0.finalPath) } catch (x: Exception) { null }
+            if (ok == false) { transition(d0, DlState.FAILED, "", "The finished file is not a PS4 PKG (size ${Fmt.bytes(e.size)}). The host probably returned an error page instead of the game."); return }
+            if (ok == true) rt.magicOk = true
+        }
         val exp = d0.expectedSize?.takeIf { it > 0 }
         val margin = if (d0.expectedSource.contains("confirmed") || d0.expectedSource.contains("agrees")) (1L shl 16) else maxOf(1L shl 20, (exp ?: 0L) / 1000)
         when {
+            exp != null && d0.expectedSource.startsWith("ezRemote Server") && e.size >= exp - margin -> complete(d0, e.size, "The finished file reached the size ezRemote Server announced.")
             exp == null -> complete(d0, e.size, "The finished file is stable. Expected size was unknown, so this was verified by file lifecycle only.")
             abs(e.size - exp) <= margin -> complete(d0, e.size, "The finished file matches the expected size.")
             else -> transition(d0, DlState.FAILED, "", "The finished file is ${Fmt.bytes(e.size)} but ${Fmt.bytes(exp)} was expected.")
@@ -530,8 +649,15 @@ object DownloadMonitor {
                   catch (e: Exception) { if (wasActive) resume(id); return@withContext Tx.t(PkgInspector.friendly(e)) }
         if (out.deleted.isEmpty() && wasActive) resume(id)
         val parts = ArrayList<String>(); parts += Remote.summary(out)
-        if (wasActive && out.deleted.isNotEmpty()) parts += tr("If ezRemote still has the file open it may keep transferring data in the background: this app has no confirmed way to cancel that transfer.",
-            "إذا كان ezRemote ما زال يفتح الملف فقد يواصل نقل البيانات في الخلفية: لا يملك التطبيق وسيلة مؤكدة لإلغاء هذا النقل.")
+        if (wasActive && out.deleted.isNotEmpty()) {
+            val fp = dl.fileName?.let { joinPath(norm(dl.dest), it) }
+            fun bytes(): Long? = if (fp == null || !PkgInspector.httpOn(p)) null else try { EzServer.list(p, 3000).let { l -> EzServer.newest(l, fp)?.takeIf { it.active }?.bytes ?: 0L } } catch (e: Exception) { null }
+            val b1 = bytes(); if (b1 != null) Thread.sleep(4000); val b2 = if (b1 != null) bytes() else null
+            parts += if (b1 != null && b2 != null && b2 > b1) tr("ezRemote Server is STILL downloading into the deleted file (+${Fmt.bytes(b2 - b1)} in 4 s). It has no cancel; only stopping ezRemote Server (Settings > Advanced) halts it.",
+                "خادم ezRemote ما زال يحمّل إلى الملف المحذوف (+${Fmt.bytes(b2 - b1)} خلال 4 ثوانٍ). لا يملك إلغاءً؛ إيقافه فقط (الإعدادات ← متقدم) يوقف التحميل.")
+            else if (b1 != null && b2 != null) tr("The transfer is no longer growing.", "لم يعد النقل ينمو.")
+            else tr("If ezRemote Server still has the file open it may keep transferring in the background; it has no cancel.", "إذا كان خادم ezRemote ما زال يفتح الملف فقد يواصل النقل في الخلفية؛ لا يملك إلغاءً.")
+        }
         if (removeRecord && out.failed.isEmpty() && out.reappeared.isEmpty()) remove(id)
         else DownloadRepo.update(id) { it.copy(note = Remote.summary(out)) }
         parts.joinToString("\n")

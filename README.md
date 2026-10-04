@@ -55,3 +55,12 @@ Old Engine.kt / Sender.kt (template "Learn" workflow) were removed.
 - uploadResumeSize is used as a cheap single-file size query.
 - Long operations (Ops.kt) run in an app-level scope with the foreground service; one at a time; results verified by listing because ezRemote ignores several return values.
 - Deliberately NOT used: GET /stop (stops ezRemote), POST /compress (writes to its own folder, ignores `destination`, can answer twice), copy with `singleFilename` (only handles folders), /permission (unsupported).
+
+## 3.1 — after reading ps4-ezremote-server (the component that really downloads)
+Facts from its source (server/http_server.cpp, config.h, clients/baseclient.cpp):
+- ezRemote Server listens on 0.0.0.0:6701. `dest_path` is the FINAL FILE PATH: it writes "<dest_path>.tmp" and renames at the end. Sending only a folder ("/data/pkg") made it write "/data/pkg.tmp" and fail the final rename. => the app now ALWAYS sends folder + unique file name.
+- GET /get_download_state gives path, bytes_transfered, file_size, state (0 pending, 1 downloading, 2 resumed, 3 failed, 4 success) for every background download => primary monitoring source (exact path match, real bytes/state/size; filesystem listing is secondary).
+- It downloads ONE file at a time (others stay PENDING), retries FAILED up to 5 times, and has no cancel/pause/remove. GET /stop terminates the whole server.
+- BaseClient::Get returns success for ANY HTTP answer (error pages included) => finished .pkg files are checked for the PKG magic.
+- Downloads started elsewhere are adopted from the server list (toggle in Settings > Advanced); removed ones are not re-adopted.
+- Settings > Advanced: Stop ezRemote Server (all background downloads/installs; they resume after relaunch).

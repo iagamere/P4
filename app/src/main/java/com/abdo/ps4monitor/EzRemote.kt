@@ -51,6 +51,7 @@ object EzRemote {
             val r = runCatching { JSONObject(text).optJSONObject("result") }.getOrNull()
             if (r != null && !r.optBoolean("success", false)) {
                 val err = r.optString("error").takeIf { it.isNotBlank() && it != "null" }
+                if (err == "Failed to download") return Submit.Rejected("ezRemote could not hand the download to ezRemote Server (port 6701). The background server may not be running: restart ezRemote Client on the PS4.", code)
                 return Submit.Rejected("ezRemote rejected the request" + (err?.let { ": $it" } ?: "."), code)
             }
             if (r == null) DownloadMonitor.d("ezRemote response had no result object; treated as accepted (HTTP $code)")

@@ -21,7 +21,7 @@ enum class Link(private val en: String, private val ar: String) {
 }
 enum class Reach { UNKNOWN, REACHABLE, UNREACHABLE }
 data class Ps4Status(
-    val http: Link = Link.UNKNOWN, val ftp: Link = Link.UNKNOWN, val reach: Reach = Reach.UNKNOWN,
+    val http: Link = Link.UNKNOWN, val ftp: Link = Link.UNKNOWN, val bg: Link = Link.UNKNOWN, val reach: Reach = Reach.UNKNOWN,
     val lastOkAt: Long = 0, val message: String = ""
 )
 

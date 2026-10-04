@@ -79,7 +79,7 @@ private fun go(nav: NavController, r: String) = nav.navigate(r) { popUpTo(nav.gr
                             Reach.UNREACHABLE -> Tx.t(st.message.ifBlank { tr("Cannot reach the PS4", "تعذّر الوصول إلى الـPS4") })
                             Reach.UNKNOWN -> tr("Not checked yet", "لم يُفحص بعد")
                         }, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
-                        Text(tr("ezRemote web", "ويب ezRemote") + ": ${st.http.label}   •   FTP: ${st.ftp.label}", style = MaterialTheme.typography.bodySmall)
+                        Text(tr("ezRemote web", "ويب ezRemote") + ": ${st.http.label}   •   FTP: ${st.ftp.label}   •   " + tr("Server", "الخادم") + ": ${st.bg.label}", style = MaterialTheme.typography.bodySmall)
                         if (probing) LinearProgressIndicator(Modifier.fillMaxWidth())
                         else if (probeMsg.isNotBlank()) Text(Tx.lines(probeMsg), style = MaterialTheme.typography.bodySmall)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

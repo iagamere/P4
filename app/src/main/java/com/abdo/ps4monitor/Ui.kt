@@ -215,10 +215,7 @@ fun resultText(r: SubmitResult) = Tx.t(when (r) {
                 OutlinedTextField(dest, { dest = it }, label = { Text(tr("Destination on the PS4", "الوجهة على الـPS4")) }, singleLine = true)
                 if (linkCount <= 1) OutlinedTextField(name, { name = it; nameEdited = true }, label = { Text(tr("File name on the PS4", "اسم الملف على الـPS4")) }, singleLine = true,
                     supportingText = { Text(tr("Must end with .pkg to appear in the PS4 package list", "يجب أن ينتهي بـ .pkg ليظهر في قائمة الحزم")) })
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Column(Modifier.weight(1f)) { Text(tr("Send the file name to ezRemote", "إرسال اسم الملف إلى ezRemote")); Dim(tr("Experimental: sends destination as folder/name. Turn off if downloads stop starting.", "تجريبي: يرسل الوجهة بصيغة مجلد/اسم. أوقفه إن توقفت التحميلات عن البدء.")) }
-                    Switch(sendName, { sendName = it; Store.sp.edit().putBoolean("sendpath", it).apply() })
-                }
+                Dim(tr("ezRemote Server saves to exactly this folder and file name (it treats the destination as a file path), then renames from .tmp when finished.", "يحفظ خادم ezRemote في هذا المجلد وبهذا الاسم تمامًا (يعامل الوجهة كمسار ملف)، ثم يعيد التسمية من .tmp عند الانتهاء."))
                 OutlinedTextField(sizeTxt, { sizeTxt = it }, label = { Text(tr("File size (optional), e.g. 47.5 GB", "حجم الملف (اختياري) مثل 47.5 GB")) }, singleLine = true)
                 if (linkCount <= 1) Row(Modifier.fillMaxWidth().clickable { installMode = !installMode }, verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(installMode, { installMode = it })
@@ -241,7 +238,7 @@ fun resultText(r: SubmitResult) = Tx.t(when (r) {
                 links.forEachIndexed { i, l ->
                     if (i > 0) delay(4000)
                     val r = DownloadMonitor.submit(target, l, dest, if (links.size == 1) Fmt.parseSize(sizeTxt).takeIf { sizeTxt.isNotBlank() } ?: 0L else 0L,
-                        null, if (sendName) (if (links.size == 1) name.trim().ifBlank { Names.fromUrl(l) } else Names.fromUrl(l)) else null, sendName)
+                        null, if (links.size == 1) name.trim().ifBlank { Names.fromUrl(l) } else Names.fromUrl(l), true)
                     if (r is SubmitResult.Accepted) ok++
                     out.append(if (links.size > 1) "${i + 1}/${links.size}: " else "").append(resultText(r)).append('\n'); msg = out.toString()
                 }

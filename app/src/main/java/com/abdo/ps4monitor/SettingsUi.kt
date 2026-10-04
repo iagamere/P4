@@ -13,6 +13,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -73,11 +76,13 @@ import kotlinx.coroutines.launch
             Button(onClick = { ctx.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }) { Lbl(tr("Battery settings", "إعدادات البطارية")) }
         } }
         item { NavRow(R.drawable.ic_search, tr("Advanced", "متقدم"), tr("Debug log, history", "سجل التصحيح، السجل القديم")) { nav.navigate("settings/advanced") } }
-        item { Dim("PS4 Download Monitor 3.0") }
+        item { Dim("PS4 Download Monitor 3.1") }
     }
 }
 
 @Composable fun AdvancedScreen(nav: NavController) {
+    val ctx = LocalContext.current; val scope = rememberCoroutineScope()
+    var confirmStop by remember { mutableStateOf(false) }
     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         BackHeader(tr("Advanced", "متقدم"), nav)
         Panel {
@@ -90,6 +95,23 @@ import kotlinx.coroutines.launch
             ToggleRow(tr("Auto-monitor growing .tmp files this app did not start", "مراقبة ملفات .tmp المتنامية تلقائيًا إن لم يبدأها التطبيق"), "auto", false)
             Dim(tr("Only applies while at least one download is being monitored on that PS4. A .tmp is adopted only after it is seen growing.", "يعمل فقط أثناء مراقبة تحميل واحد على الأقل على ذلك الـPS4، ولا يُعتمد ملف .tmp إلا بعد رؤيته ينمو."))
         }
+        Panel {
+            ToggleRow(tr("Show downloads that ezRemote Server is running but this app did not start", "إظهار التحميلات التي يشغّلها خادم ezRemote ولم يبدأها التطبيق"), "adoptsrv", true)
+            Dim(tr("Read from ezRemote Server (port 6701): exact file path, real state and size.", "تُقرأ من خادم ezRemote (المنفذ 6701): مسار الملف الدقيق والحالة والحجم الفعلية."))
+            HorizontalDivider()
+            OutlinedButton(onClick = { confirmStop = true }, enabled = Ps4Repo.active() != null) { Ico(R.drawable.ic_stop, 18.dp, MaterialTheme.colorScheme.error); Spacer(Modifier.width(6.dp)); Lbl(tr("Stop ezRemote Server", "إيقاف خادم ezRemote"), color = MaterialTheme.colorScheme.error) }
+            Dim(tr("ezRemote Server has no per-download cancel. This stops ALL its background downloads and installs; they resume from where they stopped once ezRemote Client is launched again on the PS4.", "خادم ezRemote لا يملك إلغاءً لتحميل واحد. هذا يوقف كل تحميلاته وتثبيتاته في الخلفية؛ وتُستأنف من حيث توقفت عند تشغيل ezRemote Client مجددًا على الـPS4."))
+        }
+        if (confirmStop) AlertDialog(onDismissRequest = { confirmStop = false }, title = { Text(tr("Stop ezRemote Server?", "إيقاف خادم ezRemote؟")) },
+            text = { Text(tr("All background downloads and installs on ${Ps4Repo.active()?.name ?: "the PS4"} will stop. Launch ezRemote Client on the PS4 to start it again.", "ستتوقف كل التحميلات والتثبيتات في الخلفية على ${Ps4Repo.active()?.name ?: "الـPS4"}. شغّل ezRemote Client على الـPS4 لتشغيله مجددًا.")) },
+            confirmButton = { TextButton(onClick = {
+                val p = Ps4Repo.active(); confirmStop = false
+                if (p != null) scope.launch {
+                    val stopped = withContext(Dispatchers.IO) { EzServer.stop(p) }
+                    Toast.makeText(ctx, if (stopped) tr("ezRemote Server stopped.", "توقف خادم ezRemote.") else tr("It still answers; it was not stopped.", "ما زال يستجيب؛ لم يتوقف."), Toast.LENGTH_LONG).show()
+                }
+            }) { Lbl(tr("Stop", "إيقاف"), color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { confirmStop = false }) { Lbl(tr("Cancel", "إلغاء")) } })
         NavRow(R.drawable.ic_search, tr("Debug log", "سجل التصحيح"), "") { nav.navigate("settings/log") }
         NavRow(R.drawable.ic_schedule, tr("Download history", "سجل التحميلات"), "") { nav.navigate("settings/history") }
     }
