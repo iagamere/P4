@@ -1,7 +1,6 @@
-@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 package com.abdo.ps4monitor
 import androidx.annotation.DrawableRes
-import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -9,10 +8,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,21 +31,21 @@ private fun go(nav: NavController, r: String) = nav.navigate(r) { popUpTo(nav.gr
     val activeId by Ps4Repo.activeId.collectAsState()
     val statuses by DownloadMonitor.status.collectAsState()
     val dls by DownloadRepo.all.collectAsState()
-    val events by DownloadMonitor.events.collectAsState()
-    val untracked by DownloadMonitor.untracked.collectAsState()
     val ps4 = ps4s.firstOrNull { it.id == activeId }
     val st = ps4?.let { statuses[it.id] } ?: Ps4Status()
     val scope = rememberCoroutineScope()
     var probing by remember { mutableStateOf(false) }
     var probeMsg by remember { mutableStateOf("") }
     var pick by remember { mutableStateOf(false) }
-    var delTmp by remember { mutableStateOf<Pair<String, FsEntry>?>(null) }
+    var pauseId by remember { mutableStateOf<String?>(null) }
+    var resumeId by remember { mutableStateOf<String?>(null) }
     fun refresh() { val p = ps4 ?: return; probing = true; scope.launch { probeMsg = DownloadMonitor.probe(p); probing = false } }
     LaunchedEffect(ps4?.id) { if (ps4 != null) refresh() }
 
     val mine = dls.filter { it.ps4Id == ps4?.id }
     val active = mine.filter { it.state.active }
-    val recent = mine.filter { !it.state.active }.sortedByDescending { it.updatedAt }.take(4)
+    val paused = mine.filter { it.state == DlState.PAUSED }
+    val recent = mine.filter { !it.state.active && it.state != DlState.PAUSED }.sortedByDescending { it.updatedAt }.take(4)
     LazyColumn(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
         item { ClipCard() }
         item {
@@ -67,19 +62,14 @@ private fun go(nav: NavController, r: String) = nav.navigate(r) { popUpTo(nav.gr
                             Ico(R.drawable.ic_console, 32.dp)
                             Column(Modifier.weight(1f)) {
                                 Text(ps4.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("${ps4.host}  •  :${ps4.httpPort}" + if (ps4.ftpPort > 0) "  •  FTP :${ps4.ftpPort}" else "", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${ps4.host}  •  :${ps4.httpPort}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             if (ps4s.size > 1) Box {
                                 TextButton(onClick = { pick = true }) { Lbl(tr("Switch", "تبديل")) }
                                 DropdownMenu(pick, { pick = false }) { ps4s.forEach { p -> DropdownMenuItem(text = { Text(p.name) }, onClick = { Ps4Repo.setActive(p.id); pick = false }) } }
                             }
                         }
-                        Text(when (st.reach) {
-                            Reach.REACHABLE -> tr("Connected", "متصل")
-                            Reach.UNREACHABLE -> Tx.t(st.message.ifBlank { tr("Cannot reach the PS4", "تعذّر الوصول إلى الـPS4") })
-                            Reach.UNKNOWN -> tr("Not checked yet", "لم يُفحص بعد")
-                        }, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
-                        Text(tr("ezRemote web", "ويب ezRemote") + ": ${st.http.label}   •   FTP: ${st.ftp.label}   •   " + tr("Server", "الخادم") + ": ${st.bg.label}", style = MaterialTheme.typography.bodySmall)
+                        Text(tr("ezRemote web", "ويب ezRemote") + ": ${st.web.label}   •   " + tr("ezRemote Server", "خادم ezRemote") + ": ${st.bg.label}", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                         if (probing) LinearProgressIndicator(Modifier.fillMaxWidth())
                         else if (probeMsg.isNotBlank()) Text(Tx.lines(probeMsg), style = MaterialTheme.typography.bodySmall)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -101,33 +91,13 @@ private fun go(nav: NavController, r: String) = nav.navigate(r) { popUpTo(nav.gr
         }
         item { SectionTitle(tr("Active downloads", "التحميلات النشطة") + " (${active.size})") }
         if (active.isEmpty()) item { Dim(tr("Nothing is being downloaded.", "لا يوجد تحميل جارٍ.")) }
-        items(active.take(3), key = { it.id }) { DownloadCard(it, { nav.navigate("downloads/${it.id}") }) }
+        items(active.take(3), key = { it.id }) { DownloadCard(it, { nav.navigate("downloads/${it.id}") }, onPause = { pauseId = it.id }) }
         if (active.size > 3) item { TextButton(onClick = { go(nav, "downloads") }) { Lbl(tr("View all", "عرض الكل") + " ${active.size}") } }
-        val loose = ps4?.let { untracked[it.id].orEmpty() }.orEmpty()
-        if (loose.isNotEmpty()) {
-            item { SectionTitle(tr("Temporary files on the PS4", "ملفات مؤقتة على الـPS4")) }
-            item { Dim(tr("These .tmp files are not tracked by this app (for example started directly in ezRemote).", "ملفات .tmp هذه غير متابَعة من التطبيق (مثلًا بدأت مباشرة من ezRemote).")) }
-            items(loose, key = { it.first + "/" + it.second.name }) { (dir, e) ->
-                Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
-                    Row(Modifier.padding(start = 14.dp, top = 8.dp, bottom = 8.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        val th by produceState<Thumb?>(null, dir, e.name, e.size) { value = ps4?.let { PkgThumbs.get(it, joinPath(dir, e.name), e.size, 96) } }
-                        Box(Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh), contentAlignment = Alignment.Center) {
-                            val b = th?.bmp
-                            if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else Ico(R.drawable.ic_schedule, 22.dp, MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Column(Modifier.weight(1f)) { Text(th?.title ?: e.name, maxLines = 1, overflow = TextOverflow.Ellipsis); Dim(Fmt.bytes(e.size)) }
-                        TextButton(onClick = { ps4?.let { DownloadMonitor.adopt(it.id, dir, e) } }) { Lbl(tr("Monitor", "مراقبة")) }
-                        IconButton(onClick = { delTmp = dir to e }) { Ico(R.drawable.ic_delete, 22.dp, MaterialTheme.colorScheme.onSurfaceVariant) }
-                    }
-                }
-            }
-        }
+        if (paused.isNotEmpty()) item { SectionTitle(tr("Paused", "متوقفة") + " (${paused.size})") }
+        items(paused.take(3), key = { "p" + it.id }) { DownloadCard(it, { nav.navigate("downloads/${it.id}") }, onResume = { resumeId = it.id }) }
         if (recent.isNotEmpty()) item { SectionTitle(tr("Recent downloads", "آخر التحميلات")) }
         items(recent, key = { "r" + it.id }) { DownloadCard(it, { nav.navigate("downloads/${it.id}") }) }
-        if (events.isNotEmpty()) {
-            item { SectionTitle(tr("Recent events", "آخر الأحداث")) }
-            item { Panel { events.takeLast(6).reversed().forEach { Dim(Tx.ev(it)) } } }
-        }
     }
-    delTmp?.let { d -> if (ps4 != null) ConfirmPs4Delete(ps4, listOf(d), onDone = { DownloadMonitor.kick(); refresh() }, close = { delTmp = null }) }
+    pauseId?.let { ConfirmPause(it) { pauseId = null } }
+    resumeId?.let { ConfirmResume(it) { resumeId = null } }
 }

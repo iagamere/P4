@@ -24,7 +24,7 @@
         <service android:name=".MonitorService" android:exported="false"
             android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Monitors PS4 download progress on the local network (HTTP/FTP file listings)" />
+                android:value="Monitors PS4 download progress on the local network (ezRemote Server)" />
         </service>
     </application>
 </manifest>

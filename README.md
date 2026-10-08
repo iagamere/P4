@@ -1,77 +1,16 @@
-# PS4 Download Monitor 2.0
+# PS4 Download Monitor 4.0
 
-Build: open in Android Studio (Koala or newer, JDK 17), sync Gradle, Run / Build APK.
-NOT yet compiled or tested by the author of this refactor (no Android SDK was available) — expect to fix a few compile errors on first sync.
+Open in Android Studio (JDK 17), sync Gradle, run. NOT compiled by the author (no Android SDK available): expect to fix a few compile errors on first sync.
 
-Setup: Home -> Add PS4 (IP, ezRemote web port 8080, FTP port 2121 or 0 to disable) -> Test connection -> Save.
-Send downloads: Browser -> find link (or ⋮ -> "Send this page's link to PS4") -> choose PS4 / destination -> Send.
-Request accepted != download started != download completed; Downloads shows only what the PS4 filesystem proves.
+How it works (all verified from the ezRemote sources):
+- Send: POST /__local__/download_url on ezRemote Client (:8080) with dest = FINAL FILE PATH (folder + unique name).
+- Monitor: ezRemote Server (:6701) GET /get_download_state (live bytes/size/state); when it is down, bg_download_history.json.
+- Pause / Resume / Delete: stop ezRemote Server, edit bg_download_history.json (state 3 + failed_attempts 5 / 1, or remove the entry), delete files.
+  The server reads the file only at start-up, so a running server cannot be told to stop one download.
+- Files: browse, rename, new folder, copy/cut/paste, extract, install, delete (ezRemote web only; no FTP).
+- PKG reader: title, icon, header, entries (partial reads over ezRemote downloadFile with Range).
 
-Layout (package com.abdo.ps4monitor):
-- Models.kt        Ps4, Download, DlState, Link/Reach/Ps4Status, FsEntry, SubmitResult
-- Store.kt         settings, bookmarks, Ps4Repo, DownloadRepo (encrypted JSON persistence)
-- EzRemote.kt      confirmed ezRemote calls only: /__local__/download_url, /__local__/list; Net.size (server size check)
-- Ftp.kt           FTP helper (short-lived listing sessions)
-- DownloadMonitor.kt  shared monitor: HTTP list + FTP fallback, file matching, state machine, speed/ETA, verification, recovery
-- Notifier.kt / MonitorService.kt   one notification per download id; foreground service
-- MainActivity.kt (nav) / Ui.kt / HomeUi.kt / DownloadsUi.kt / BrowserUi.kt / SettingsUi.kt
-Old Engine.kt / Sender.kt (template "Learn" workflow) were removed.
-
-## 2.1
-- Downloads: per-card Stop/Delete, long-press multi-select (select all, stop, delete). "Stop" = stop monitoring only (no confirmed ezRemote cancel API); "Delete" = remove from list only.
-- Material You (phone colours) with purple fallback; rounded surfaces; status/nav bar tinted to the theme.
-- All emoji replaced by vector drawables (res/drawable/ic_*.xml, SVG path data); single-line ellipsised labels; FlowRow for button/chip groups.
-- Language: Settings -> Language (Phone / English / العربية), RTL layout, translated engine messages (Lang.kt: tr() and Tx).
-
-## 2.2
-- Adaptive launcher icon (+ themed/monochrome) and notification small icon.
-- "File name on the PS4" field in the send dialog (suggested from the link, `.pkg` appended if there is no real extension). Optional switch "Send the file name to ezRemote" sends dest as `<folder>/<name>` — EXPERIMENTAL: ezRemote's handling of a file path in `dest` is not confirmed from source.
-
-## 2.3
-- PKG reader (Pkg.kt): reads the header, entry table, param.sfo and icon0/pic0/pic1 of a PS4 .pkg over FTP (partial reads, works on a .tmp while it downloads). Shows title, icon, title id, version, FW, region, entries (encrypted ones listed, never decrypted).
-  Layout offsets come from community PKG notes, NOT from your files yet; they are range-checked and shown raw. "Copy report" in the inspector exports everything for debugging.
-- Total size from the PKG header is applied automatically only when two header fields agree (pkg_size == PFS image end, +-1 MiB); otherwise it is shown but not used.
-- Files screen (Home -> Files): browse the PS4 over FTP (HTTP list as fallback), thumbnails for scanned PKGs, image preview, multi-select.
-- Delete ON THE PS4 (FTP DELE/RMD): Files screen, Home (untracked .tmp), Downloads ("Also delete the file(s) from the PS4"). Re-lists the folder afterwards to confirm. Extra red warning outside the PS4's download folder.
-- Stopping a running transfer on the PS4 is NOT possible with confirmed ezRemote APIs; deleting the partial file is best effort and the UI says so.
-
-## 2.4 (after reading ezRemote http_server.cpp)
-- /__local__/list envelope confirmed: {"result":[{name,rights,date,size(string),type:"dir"|"file"}]}; "date" now parsed.
-- PKG reads go through GET /__local__/downloadFile?path= with a Range header (FTP REST as fallback) => no FTP needed for icons / size / inspector. Range support depends on the ezRemote build (unverified).
-- Delete on PS4 uses POST /__local__/remove {"items":[...]} (recursive!) with FTP fallback; always verified by re-listing; refuses top-level folders.
-- Finished PKG without ".pkg" is renamed via POST /__local__/rename {"item","newItemPath"} after a magic check; verified by listing (ezRemote ignores the rename result). Toggle in Settings > Advanced.
-- "Send file name in dest" is now OFF by default: how the internal downloader treats dest_path is not in http_server.cpp.
-- Never used: GET /stop (stops the whole ezRemote web server).
-
-## 2.5
-- Artwork now loads by itself everywhere (Files rows, Downloads cards/detail, Home): PkgThumbs reads the PKG header on demand, one read at a time, disk-cached, failures remembered (no repeated hits while scrolling). Old/completed downloads get their icon and title the first time they are shown.
-
-## 3.0 — everything http_server.cpp offers that makes sense for a download companion
-- Install a .pkg on the PS4 (POST /__local__/install) from Files, the PKG inspector and finished downloads; optional auto-install (off by default).
-- Install directly from a link (POST /__local__/install_url, enable_rpi, no disk copy) from the send dialog.
-- Files: new folder (createFolder), rename (rename), copy / cut / paste (copy, move) with overwrite warning, extract zip/rar/7z (extract), delete (remove), save a PS4 file to the phone (downloadFile via DownloadManager).
-- Upload from the phone (multipart /__local__/upload, 8 MiB chunks, resume via uploadResumeSize, size verified at the end).
-- Text viewer/editor (getContent / edit, <= 256 KB).
-- uploadResumeSize is used as a cheap single-file size query.
-- Long operations (Ops.kt) run in an app-level scope with the foreground service; one at a time; results verified by listing because ezRemote ignores several return values.
-- Deliberately NOT used: GET /stop (stops ezRemote), POST /compress (writes to its own folder, ignores `destination`, can answer twice), copy with `singleFilename` (only handles folders), /permission (unsupported).
-
-## 3.1 — after reading ps4-ezremote-server (the component that really downloads)
-Facts from its source (server/http_server.cpp, config.h, clients/baseclient.cpp):
-- ezRemote Server listens on 0.0.0.0:6701. `dest_path` is the FINAL FILE PATH: it writes "<dest_path>.tmp" and renames at the end. Sending only a folder ("/data/pkg") made it write "/data/pkg.tmp" and fail the final rename. => the app now ALWAYS sends folder + unique file name.
-- GET /get_download_state gives path, bytes_transfered, file_size, state (0 pending, 1 downloading, 2 resumed, 3 failed, 4 success) for every background download => primary monitoring source (exact path match, real bytes/state/size; filesystem listing is secondary).
-- It downloads ONE file at a time (others stay PENDING), retries FAILED up to 5 times, and has no cancel/pause/remove. GET /stop terminates the whole server.
-- BaseClient::Get returns success for ANY HTTP answer (error pages included) => finished .pkg files are checked for the PKG magic.
-- Downloads started elsewhere are adopted from the server list (toggle in Settings > Advanced); removed ones are not re-adopted.
-- Settings > Advanced: Stop ezRemote Server (all background downloads/installs; they resume after relaunch).
-
-## 3.2 — bg_download_history.json (/data/ezremote-client/)
-Source facts (ps4-ezremote-server config.cpp / http_server.cpp / main.cpp):
-- The file is read ONCE at server start-up. The running server works on memory and rewrites the file only when a download starts, finishes, or failed_attempts reaches 5 (bytes_transfered in the file is a snapshot, not live).
-- At start-up an entry resumes when state==1 (DOWNLOADING) or state==3 (FAILED) with failed_attempts<5, continuing from the .tmp size (bytes counter restarts from that size). state 3 + failed_attempts 5 is never retried.
-- GET /stop terminates the process (pthread_cancel, no save).
-App:
-- Reads the file (web range read, FTP fallback) for name, size, state, attempts: used when ezRemote Server is down and to adopt entries the app does not know (e.g. a download that stopped for good) as PAUSED.
-- PAUSE = stop ezRemote Server, then mark the entry state=3 / failed_attempts=5 (text-level edit, everything else byte-identical, verified by reading back). RESUME = same with failed_attempts=1; ezRemote must then be launched on the PS4 so the server reloads the file (the app cannot start it).
-- attempts>=5 seen in the file => state PAUSED ("ezRemote Server stopped retrying") instead of a generic failure.
-- New Paused tab, play/pause buttons on cards, dialogs that spell out the consequences.
+Files: Models, Store, EzRemote (client API), EzServer (+ BgHistory), DownloadMonitor, Ops, Pkg, Notifier, MonitorService,
+Names, Fmt, Lang, and the UI (MainActivity, Ui, HomeUi, DownloadsUi, FilesUi, PkgUi, BrowserUi, SettingsUi).
+Removed in 4.0: FTP, file-matching heuristics, Net size check, install-from-link, upload, text editor, save-to-phone, image preview,
+artwork scan, history screen, auto-rename/auto-install, adoption toggle, "stop monitoring", speed chart, untracked .tmp list, events list.

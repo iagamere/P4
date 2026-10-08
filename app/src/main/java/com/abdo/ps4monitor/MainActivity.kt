@@ -90,8 +90,6 @@ private val TABS = listOf(Triple("home", R.drawable.ic_home, "Home" to "الرئ
             composable("downloads") { DownloadsScreen(nav) }
             composable("downloads/{id}", listOf(navArgument("id") { type = NavType.StringType })) { DownloadDetail(it.arguments?.getString("id").orEmpty(), nav) }
             composable("files") { FilesScreen(nav) }
-            composable("text/{ps4}/{path}", listOf(navArgument("ps4") { type = NavType.StringType }, navArgument("path") { type = NavType.StringType })) {
-                TextScreen(it.arguments?.getString("ps4").orEmpty(), it.arguments?.getString("path").orEmpty(), nav) }
             composable("pkg/{ps4}/{path}", listOf(navArgument("ps4") { type = NavType.StringType }, navArgument("path") { type = NavType.StringType })) {
                 PkgScreen(it.arguments?.getString("ps4").orEmpty(), it.arguments?.getString("path").orEmpty(), nav) }
             composable("settings") { SettingsScreen(nav) }
@@ -99,7 +97,6 @@ private val TABS = listOf(Triple("home", R.drawable.ic_home, "Home" to "الرئ
             composable("settings/ps4/{id}", listOf(navArgument("id") { type = NavType.StringType })) { Ps4EditScreen(it.arguments?.getString("id").orEmpty(), nav) }
             composable("settings/advanced") { AdvancedScreen(nav) }
             composable("settings/log") { LogScreen(nav) }
-            composable("settings/history") { HistoryScreen(nav) }
         }
     }
     Inbox.url.value?.let { u ->

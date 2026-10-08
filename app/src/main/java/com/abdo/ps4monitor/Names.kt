@@ -1,7 +1,9 @@
 package com.abdo.ps4monitor
 import android.net.Uri
 
-/** File-name suggestion from the link only. No request is made to the server (links like /verify/<token> may be single-use). */
+fun joinPath(dir: String, name: String) = if (dir == "/") "/$name" else "$dir/$name"
+
+/** File-name suggestion from the link only. No request is made to the host (links like /verify/<token> may be single-use). */
 object Names {
     fun clean(n: String) = n.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().trim('.')
     private fun hasExt(n: String): Boolean {

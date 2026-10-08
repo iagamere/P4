@@ -180,52 +180,22 @@ object PkgStore {
 }
 
 object PkgInspector {
-    val mutex = Mutex()          // one PKG read at a time: the PS4 FTP server is small and also serves the monitor
+    val mutex = Mutex()          // one PKG read at a time: the PS4 is small and also serves the monitor
     class Result(val info: PkgInfo?, val error: String?, val notPkg: Boolean)
 
-    fun ftpOn(p: Ps4) = p.mode != MonitorMode.HTTP_ONLY && p.ftpPort > 0
-    fun httpOn(p: Ps4) = p.mode != MonitorMode.FTP_ONLY
-    fun canRead(p: Ps4) = httpOn(p) || ftpOn(p)
-    private val httpBadUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
-    /** Partial file read: ezRemote web (Range) first, FTP (REST) as fallback. Never transfers more than [len] bytes. */
-    fun readBytes(p: Ps4, path: String, off: Long, len: Int): ByteArray {
-        val s = Store.settings(); var last: Exception? = null
-        if (httpOn(p) && (httpBadUntil[p.id] ?: 0L) < System.currentTimeMillis()) {
-            try { return EzRemote.readRange(p, path, off, len, s.timeout * 1000) }
-            catch (e: Exception) { last = e; if (ftpOn(p)) httpBadUntil[p.id] = System.currentTimeMillis() + 60_000; DownloadMonitor.d("File read via web failed: ${e.javaClass.simpleName}: ${e.message}") }
-        }
-        if (ftpOn(p)) {
-            try { return Ftp.readRange(conn(p), s, path, off, len) }
-            catch (e: Exception) { last = e; DownloadMonitor.d("File read via FTP failed: ${e.javaClass.simpleName}: ${e.message}") }
-        }
-        throw last ?: IOException("No connection method is enabled for this PS4")
-    }
-    /** True when the file starts with the PS4 PKG magic. */
-    fun isPkg(p: Ps4, path: String): Boolean { val b = readBytes(p, path, 0, 4); return b.size == 4 && PkgFormat.u32(b, 0) == PkgFormat.MAGIC }
-    private fun conn(p: Ps4) = Conn(p.host, p.ftpPort, p.ftpUser, p.ftpPass)
+    fun readBytes(p: Ps4, path: String, off: Long, len: Int): ByteArray = EzRemote.readRange(p, path, off, len, Store.settings().timeout * 1000)
+    fun browse(p: Ps4, dir: String): List<FsEntry> = EzRemote.list(p, DownloadMonitor.norm(dir), Store.settings().timeout * 1000)
     private val PNG = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47)
     private fun isPng(b: ByteArray) = b.size > 8 && (0 until 4).all { b[it] == PNG[it] }
-
-    /** Folder listing: FTP first (reliable folder flag), ezRemote /__local__/list as fallback. */
-    fun browse(p: Ps4, dir: String): List<FsEntry> {
-        val s = Store.settings(); val d = DownloadMonitor.norm(dir)
-        var last: Exception? = null
-        if (ftpOn(p)) try { return Ftp.browse(conn(p), s, d) } catch (e: Exception) { last = e; DownloadMonitor.d("Browse FTP failed: ${e.javaClass.simpleName}: ${e.message}") }
-        if (p.mode != MonitorMode.FTP_ONLY) try { return EzRemote.list(p, d, s.timeout * 1000) } catch (e: Exception) { last = e; DownloadMonitor.d("Browse HTTP failed: ${e.javaClass.simpleName}: ${e.message}") }
-        throw last ?: IOException("No connection method is enabled for this PS4")
-    }
-    fun friendly(e: Exception) = when (e) { is PkgError -> e.message ?: "PKG error"; is EzError -> EzRemote.friendly(e); is SoftError, is FtpError -> e.message ?: "FTP error"; is IOException -> if (e.message?.startsWith("RETR") == true) "The PS4 would not let the file be read." else Ftp.friendly(e); else -> Ftp.friendly(e) }
+    fun friendly(e: Exception) = when (e) { is PkgError -> e.message ?: "PKG error"; else -> EzRemote.friendly(e) }
 
     fun sizeOf(p: Ps4, path: String): Long? {
-        if (httpOn(p)) try { val n = EzRemote.fileSize(p, path, Store.settings().timeout * 1000); if (n > 0) return n } catch (e: Exception) { }      // cheap single-file query
+        try { val n = EzRemote.fileSize(p, path, Store.settings().timeout * 1000); if (n > 0) return n } catch (e: Exception) { }      // cheap single-file query
         val dir = path.substringBeforeLast('/', "/").ifEmpty { "/" }; val name = path.substringAfterLast('/')
         return browse(p, dir).firstOrNull { it.name == name }?.size
     }
 
     fun inspect(p: Ps4, path: String, fileSizeIn: Long?, key: String, full: Boolean): Result {
-        if (!canRead(p)) return Result(null, "No web or FTP connection is enabled for this PS4.", false)
-        val s = Store.settings(); val c = conn(p)
         try {
             val fsz = fileSizeIn ?: sizeOf(p, path) ?: throw PkgError("Could not read the file size")
             if (fsz < 4) throw PkgError("The file is empty so far")
@@ -298,7 +268,7 @@ object PkgThumbs {
         val key = thumbKey(p, path, size)
         fun hit(): Thumb? = PkgStore.bitmap(key, "icon0.png", maxDim)?.let { b -> val i = PkgStore.load(key); Thumb(b, i?.title, i?.titleId) }
         hit()?.let { return@withContext it }
-        if (!PkgInspector.canRead(p) || size < PkgFormat.HEADER_MIN) return@withContext null
+        if (size < PkgFormat.HEADER_MIN) return@withContext null
         if ((miss[key] ?: 0L) > System.currentTimeMillis()) return@withContext null
         PkgInspector.mutex.withLock {
             hit() ?: run {
@@ -308,12 +278,12 @@ object PkgThumbs {
         }
     }
 
-    /** Artwork of a download record: its own cache first, then the file on the PS4 (final file, else the .tmp). Adopts the result into the record. */
+    /** Artwork of a download: its own cache first, then the file on the PS4 (final file when finished, else the .tmp). Adopts the result into the record. */
     suspend fun forDownload(d: Download, maxDim: Int): Bitmap? = withContext(Dispatchers.IO) {
         PkgStore.bitmap("d:${d.id}", "icon0.png", maxDim)?.let { return@withContext it }
-        if (d.state == DlState.SUBMITTING || d.state == DlState.QUEUED || d.state == DlState.WAITING_FOR_START) return@withContext null
         val p = Ps4Repo.get(d.ps4Id) ?: return@withContext null
-        val path = d.finalPath ?: d.tempPath ?: return@withContext null
+        val path = (if (d.state == DlState.COMPLETED) d.path else d.tmpPath) ?: return@withContext null
+        if (d.currentSize < PkgFormat.HEADER_MIN) return@withContext null
         val t = get(p, path, d.currentSize, maxDim) ?: return@withContext null
         PkgStore.copy(thumbKey(p, path, d.currentSize), "d:${d.id}")
         DownloadRepo.update(d.id) { it.copy(iconReady = true, pkgTitle = it.pkgTitle ?: t.title, titleId = it.titleId ?: t.titleId) }

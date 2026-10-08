@@ -42,15 +42,13 @@ class MonitorService : Service() {
         scope.launch {
             // Re-evaluate every few seconds: summary text + stop when nothing needs watching.
             while (isActive) {
-                val all = DownloadRepo.all.value
-                val n = all.count { DownloadMonitor.isWatch(it) && it.state != DlState.NOT_STARTED }
-                val waiting = all.count { it.state == DlState.NOT_STARTED && DownloadMonitor.isWatch(it) }
+                val n = DownloadRepo.all.value.count { DownloadMonitor.isWatch(it) }
                 val opsOn = Ops.active.value > 0
-                if (n == 0 && waiting == 0 && !opsOn) {
+                if (n == 0 && !opsOn) {
                     if (idleSince == 0L) idleSince = System.currentTimeMillis()
                     if (System.currentTimeMillis() - idleSince > 5000) { stopSelf(); return@launch }   // grace period for a download submitted right now
                 } else idleSince = 0L
-                val text = if (opsOn) (Ops.label.value + (Ops.uploadPct.value.takeIf { it >= 0 }?.let { " $it%" } ?: "")) else if (n > 0) tr("Monitoring $n download${if (n > 1) "s" else ""}", "مراقبة $n تحميل") else tr("Watching for a late start", "مراقبة بدء متأخر")
+                val text = if (opsOn) Ops.label.value else tr("Monitoring $n download${if (n > 1) "s" else ""}", "مراقبة $n تحميل")
                 if (text != lastText) { lastText = text; Notifier.updateSummary(this@MonitorService, text) }
                 delay(3000)
             }

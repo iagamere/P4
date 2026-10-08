@@ -109,7 +109,7 @@ private fun report(i: PkgInfo, path: String, size: Long): String = buildString {
                         }
                     }
                 }
-                if (path.lowercase().endsWith(".pkg") && i.totalSize != null && st.size >= i.totalSize && ps4 != null && PkgInspector.httpOn(ps4))
+                if (path.lowercase().endsWith(".pkg") && i.totalSize != null && st.size >= i.totalSize && ps4 != null)
                     item { Button(onClick = { confirmInstall = true }, Modifier.fillMaxWidth()) { Ico(R.drawable.ic_install, 20.dp); Spacer(Modifier.width(8.dp)); Lbl(tr("Install on the PS4", "تثبيت على الـPS4")) } }
                 if (i.missing.isNotEmpty()) item { Panel {
                     Text(tr("Some parts are not available yet", "بعض الأجزاء غير متاحة بعد"), fontWeight = FontWeight.SemiBold)
